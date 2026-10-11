@@ -18,6 +18,8 @@
 				"/sbin/uci * *": [ "exec" ],
 				"/sbin/uci * * *": [ "exec" ],
 				"/sbin/uci * * * *": [ "exec" ],
+				"/etc/init.d/fzs-sms": [ "exec" ],
+				"/etc/init.d/fzs-sms *": [ "exec" ],
 				"/usr/lib/opkg/info/luci-app-fzs.control": [ "read" ]
 			},
 			"uci": [ "fzs-sms" ]
@@ -38,7 +40,9 @@
 				"/sbin/uci *": [ "exec" ],
 				"/sbin/uci * *": [ "exec" ],
 				"/sbin/uci * * *": [ "exec" ],
-				"/sbin/uci * * * *": [ "exec" ]
+				"/sbin/uci * * * *": [ "exec" ],
+				"/etc/init.d/fzs-sms": [ "exec" ],
+				"/etc/init.d/fzs-sms *": [ "exec" ]
 			},
 			"uci": [ "fzs-sms" ]
 		}

@@ -19,7 +19,14 @@ var TDD = [
 ];
 
 var CSS = [
-	':where(.fzs-card){background:var(--background-color-high, #ffffff);border:1px solid var(--border-color-medium, #d4d8dc);border-radius:6px;overflow:hidden;max-width:680px;padding:1em 1.1em}',
+	':where(.fzs-card){background:var(--background-color-high, #ffffff);border:1px solid var(--border-color-medium, #d4d8dc);border-radius:6px;overflow:hidden}',
+	// ★ 卡片内边距必须由自己给：有的主题把 .cbi-section 的 padding 归零（Argon 就是），
+	//   而 :where() 特异性为 0，会被主题压掉 ⇒ 内容贴到卡片边框上（勾选框贴着边）。
+	//   这里改用普通类选择器提供内边距——主题不认识 .fzs-card/.fzs-body，不会覆盖。
+	'.cbi-section.fzs-card{padding:0}',
+	'.cbi-section.fzs-card>h3{padding:.8em 1.1em}',
+	'.cbi-section.fzs-card>.fzs-body{padding:.15em 1.1em 1.05em;max-width:680px}',
+	'.cbi-section.fzs-card .cbi-section-descr{padding-left:0;padding-right:0}',
 	'.fzs-card-h{display:flex;align-items:center;gap:.6em;flex-wrap:wrap}',
 	'.fzs-row{display:flex;align-items:center;gap:.8em;padding:.4em 0}',
 	'.fzs-row>label{width:7em;flex:none;color:var(--text-color-medium);font-size:.9em}',
@@ -28,6 +35,10 @@ var CSS = [
 	'.fzs-grp>h4{margin:0 0 .4em;font-size:.85em;color:var(--text-color-medium);font-weight:600}',
 	'.fzs-bands{display:flex;flex-wrap:wrap;gap:.4em 1.2em}',
 	'.fzs-bands label{display:flex;align-items:center;gap:.35em;font-size:.92em;cursor:pointer}',
+	// ★ 复选框对齐（2026-10-11）：主题常给 `label > input[type=checkbox]{position:relative;top:.4rem}`
+	//   （Argon 就是，0.4rem = 6.4px）⇒ 复选框相对文字下沉。这里把位移归零，
+	//   **不碰外观**（各主题的原生勾选框样式都保留），只消除偏移 ⇒ 换主题也不会错乱。
+	'.fzs-bands label>input[type=checkbox]{position:relative;top:0;margin:0;flex:none}',
 	'.fzs-warn{margin:.9em 0;padding:.7em .9em;border-radius:5px;font-size:.85em;line-height:1.5;background:rgba(255,152,0,.12);border:1px solid rgba(255,152,0,.4)}',
 	'.fzs-danger{background:rgba(244,67,54,.1);border-color:rgba(244,67,54,.35)}',
 	'.fzs-actions{margin-top:1em;display:flex;gap:.6em;align-items:center;flex-wrap:wrap}',
@@ -149,7 +160,8 @@ return view.extend({
 				]),
 				E('div', { 'class': 'fzs-actions' }, [
 					E('button', { 'class': 'cbi-button cbi-button-apply', click: function() { doWrite(selected(), '应用频段'); } }, '应用勾选'),
-					E('button', { 'class': 'cbi-button', click: function() { doWrite([ '1', '3', '5', '8', '34', '38', '39', '40', '41' ], '恢复出厂频段'); } }, '恢复出厂频段'),
+					// ★ 主操作 ⇒ action（蓝）。裸 cbi-button 是中性灰，容易被误当成"不可点"。
+					E('button', { 'class': 'cbi-button cbi-button-action', click: function() { doWrite([ '1', '3', '5', '8', '34', '38', '39', '40', '41' ], '恢复出厂频段'); } }, '恢复出厂频段'),
 					status
 				])
 			])

@@ -656,7 +656,10 @@ cmd_fun_on() {   # $1=cfg
 # 读走 PDU 模式（文本模式拿不到长短信 UDH 拼接信息），解析在 fzs-sms.uc
 cmd_sms_list() {
 	_p=$(target_to_port "$1") || die "找不到 AT 口"
-	at_query "$_p" 'AT+CMGF=0' 'AT+CPMS?' 'AT+CMGL=4'
+	# ★ 末尾两条是"注册态"，供守护判断要不要降频轮询（见 fzs-smsd）：
+	#   AT+CREG? = CS 域（EC200T 的短信走这里）、AT+CEREG? = PS 域（EC200N 走 IMS/PS）。
+	#   追加在同一个会话里 ⇒ 不额外起进程、不额外开串口，实测只多 ~23ms（120→143ms）。
+	at_query "$_p" 'AT+CMGF=0' 'AT+CPMS?' 'AT+CMGL=4' 'AT+CREG?' 'AT+CEREG?'
 }
 
 cmd_sms_delete() {   # $1=目标 $2=索引

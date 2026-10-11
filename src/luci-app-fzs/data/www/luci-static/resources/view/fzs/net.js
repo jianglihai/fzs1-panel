@@ -51,7 +51,14 @@ var CSS = [
 	//   底色/边框/标题字号**全部交给主题**决定 ⇒ 换任何主题都自动跟随，不再自己画卡片。
 	//   （实测：bootstrap 与 openwrt2020 都不给 .cbi-section 画外观，区块感来自
 	//     h3 标题 + 区块间距 —— 这正是 LuCI 原生设置页的观感。）
-	':where(.fzs-card){background:var(--background-color-high, #ffffff);border:1px solid var(--border-color-medium, #d4d8dc);border-radius:6px;overflow:hidden;max-width:680px;margin-bottom:1.6em;padding:1em 1.1em}',
+	':where(.fzs-card){background:var(--background-color-high, #ffffff);border:1px solid var(--border-color-medium, #d4d8dc);border-radius:6px;overflow:hidden;margin-bottom:1.6em}',
+	// ★ 卡片内边距必须由自己给：有的主题把 .cbi-section 的 padding 归零（Argon 就是），
+	//   而 :where() 特异性为 0，会被主题压掉 ⇒ 内容贴到卡片边框上（勾选框贴着边）。
+	//   这里改用普通类选择器提供内边距——主题不认识 .fzs-card/.fzs-body，不会覆盖。
+	'.cbi-section.fzs-card{padding:0}',
+	'.cbi-section.fzs-card>h3{padding:.8em 1.1em}',
+	'.cbi-section.fzs-card>.fzs-body{padding:.15em 1.1em 1.05em;max-width:680px}',
+	'.cbi-section.fzs-card .cbi-section-descr{padding-left:0;padding-right:0}',
 	'.fzs-opt{display:flex;align-items:flex-start;gap:.55em;cursor:pointer;padding:.5em 0}',
 	'.fzs-opt input{margin-top:.3em;flex:none}',
 	// ★ 单选圈必须**自绘**，不能用浏览器原生外观：
@@ -102,6 +109,8 @@ var CSS = [
 	'.fzs-grp>h4{margin:0 0 .3em;font-size:.9rem;opacity:.8;font-weight:600}',
 	'.fzs-warn{margin:.9em 0;padding:.7em .9em;border-radius:5px;font-size:.85em;line-height:1.7;background:rgba(255,152,0,.12);border:1px solid rgba(255,152,0,.4)}',
 	'.fzs-actions{margin-top:1.1em;display:flex;gap:.6em;align-items:center;flex-wrap:wrap}',
+	// ★ 真禁用要"一眼看出"（主题给中性按钮灰底灰字，容易与禁用态混淆）。`:where()` 不抢主题。
+	':where(.fzs-actions button:disabled,.fzs-card button:disabled){opacity:.45;cursor:not-allowed;filter:grayscale(.4)}',
 	'.fzs-status{font-size:.88em}'
 ].join('\n');
 

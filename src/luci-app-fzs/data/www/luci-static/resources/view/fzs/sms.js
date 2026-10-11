@@ -17,11 +17,26 @@ var MODEMS = [
 ];
 
 var CSS = [
-	':where(.fzs-card){background:var(--background-color-high, #ffffff);border:1px solid var(--border-color-medium, #d4d8dc);border-radius:6px;overflow:hidden;max-width:900px;padding:1em 1.1em}',
-	'.fzs-card-h{display:flex;align-items:center;gap:.6em;flex-wrap:wrap}',
-	'.fzs-card-h .fzs-sub{font-size:.78em;font-weight:400;color:var(--text-color-low);margin-left:auto}',
+	':where(.fzs-card){background:var(--background-color-high, #ffffff);border:1px solid var(--border-color-medium, #d4d8dc);border-radius:6px;overflow:hidden}',
+	// ★ 卡片内边距必须由自己给：有的主题把 .cbi-section 的 padding 归零（Argon 就是），
+	//   而 :where() 特异性为 0，会被主题压掉 ⇒ 内容贴到卡片边框上（勾选框贴着边）。
+	//   这里改用普通类选择器提供内边距——主题不认识 .fzs-card/.fzs-body，不会覆盖。
+	'.cbi-section.fzs-card{padding:0}',
+	'.cbi-section.fzs-card>h3{padding:.8em 1.1em}',
+	'.cbi-section.fzs-card>.fzs-body{padding:.15em 1.1em 1.05em;max-width:680px}',
+	'.cbi-section.fzs-card .cbi-section-descr{padding-left:0;padding-right:0}',
+	// ★★ 卡片头 h3 必须提高特异性（2026-10-11 踩雷，Argon 下标题/说明/按钮挤成一行）：
+	//   主题里有更高特异性的规则 `Argon: .cbi-section > h3:first-child{display:block;width:100%}`（0,2,1）
+	//   ⇒ 单靠 `.fzs-card-h`（0,1,0）**压不过它**，display:flex 失效 → 退回 block →
+	//   `margin-left:auto` 的说明、`flex-wrap` 全失效，标题和按钮黏在一起。
+	//   ⇒ 用 `.cbi-section>.fzs-card-h`（0,2,0）+ 本身位置也够，但为稳再叠一层 `:first-child`（0,2,1）**对齐**它的特异性，
+	//     并在源码顺序上排在我们 CSS 的**后面**（后者同特异性胜出）。
+	'.cbi-section>.fzs-card-h,.cbi-section>.fzs-card-h:first-child{display:flex;align-items:center;gap:.6em;flex-wrap:wrap;line-height:normal}',
 	'.fzs-row{display:flex;align-items:center;gap:.8em;padding:.4em 0}',
-	'.fzs-row>label{width:6.5em;flex:none;color:var(--text-color-medium);font-size:.9em}',
+	// ★★ 左列标签固定宽 —— 但 `.fzs-opt` 也是 <label>，必须**豁免**这条，
+	//   否则选项区被按成 6.5em(≈82px)、里面的文字竖排（"开启短信收发"两字一行）。
+	//   ⇒ 下面用 `.fzs-row>label:not(.fzs-opt)` 精确排除。
+	'.fzs-row>label:not(.fzs-opt){width:6.5em;flex:none;color:var(--text-color-medium);font-size:.9em}',
 	'.fzs-tip{font-size:.82em;color:var(--text-color-low);margin-top:.35em;min-height:1.2em}',
 	// ★ 2026-10-08：渠道缺组件时的硬性提醒。用**红框 + 淡红底**，让它在表单里"跳出来"
 	//   （原来的灰色 tip 离勾选框远、不显眼，而这是"必须先做才能用"的硬条件）。
@@ -31,7 +46,24 @@ var CSS = [
 	// ★ 包名块：淡红底 + 等宽粗体 + `user-select:all`（点一下整块选中，方便但不强制）。
 	'.fzs-need code{background:rgba(244,67,54,.14);padding:.12em .5em;border-radius:3px;font-family:monospace;font-weight:700;user-select:all;cursor:pointer}',
 	'.fzs-actions{margin-top:1em;display:flex;gap:.6em;align-items:center;flex-wrap:wrap}',
+	// ★ 真禁用要"一眼看出"（主题给中性按钮灰底灰字，容易与禁用态混淆）。`:where()` 不抢主题。
+	':where(.fzs-actions button:disabled,.fzs-card button:disabled){opacity:.45;cursor:not-allowed;filter:grayscale(.4)}',
 	'.fzs-status{font-size:.88em}',
+	// ★ 卡片头里的提示位（「一个框一个提示」时把提示放 h3 里）：h3 是粗体大字，
+	//   提示得**小字、常规粗细、右对齐**，否则会跟标题黏成一坨。
+	// ★★ 卡片头排布规则（2026-10-11 统一，治"元素横在一条线上、有的贴边有的卡中间"）：
+	//   ① 标题在左；
+	//   ② **右侧那一组**（说明文字 / 按钮 / 状态）靠在一起、贴右 —— 由**第一个右区元素**吃 `margin-left:auto`；
+	//   ③ 其余右区元素**只留小间距**，不再抢 auto。
+	//   以前 `.fzs-sub` 与 `.fzs-status` 都写了 `margin-left:auto` ⇒ 两个抢最右，
+	//   结果一个贴边、一个卡在中间（用户原话"乱成一团糟"）。
+	'.fzs-card-h>*{flex:none}',                                       // 头里元素别被压扁
+	'.fzs-card-h .fzs-sub{font-size:.78em;font-weight:400;color:var(--text-color-low)}',
+	'.fzs-card-h .fzs-sub,.fzs-card-h>.fzs-status{font-size:.78em;font-weight:400;color:var(--text-color-low);margin-left:auto}',
+	'.fzs-card-h .fzs-sub~*,.fzs-card-h>.fzs-status~*{margin-left:0}',  // 只有第一个右区元素吃 auto
+	'.fzs-card-h button{margin-left:0}',
+	'.fzs-card-h .fzs-sub+.fzs-status,.fzs-card-h button+.fzs-status{margin-left:.5em}',
+	'.fzs-actions .fzs-status{margin-left:.3em}',
 	'.fzs-msg{display:flex;gap:.8em;padding:.6em 0;border-bottom:1px solid var(--border-color-low, #e5e8eb);align-items:flex-start}',
 	'.fzs-msg:last-child{border-bottom:0}',
 	'.fzs-mb{flex:none;font-size:.72em;padding:.1em .5em;border-radius:3px;background:var(--background-color-low, #e9ebee);border:1px solid var(--border-color-low, #e5e8eb);color:var(--text-color-medium);margin-top:.1em}',
@@ -46,7 +78,21 @@ var CSS = [
 	'.fzs-pager{display:flex;align-items:center;justify-content:center;gap:.7em;padding:.9em 0 .1em;font-size:.85em;color:var(--text-color-medium)}',
 	'.fzs-pager button{border:1px solid var(--border-color-medium, #d4d8dc);background:var(--background-color-high, #ffffff);border-radius:4px;padding:.2em .8em;cursor:pointer;color:inherit}',
 	'.fzs-pager button:disabled{opacity:.4;cursor:default}',
-	'.fzs-opt{display:flex;align-items:center;gap:.4em;font-size:.85em;color:var(--text-color-medium);white-space:nowrap}',
+	// ★★ 选项行的三条约束（2026-10-11 踩雷总结）：
+	//   ① `.fzs-opt` 是 <label>，在 flex 的 .fzs-row 里会被 `.fzs-row>label{width:6.5em}` 按成 82px
+	//      ⇒ 必须 `:not(.fzs-opt)` 豁免 + 这里 `flex:1`、内部文字 `nowrap`；
+	//   ② 复选框必须 `flex:none`，否则被 flex 收缩挤成 2×16px（"勾选框不见了"的真因）；
+	//   ③ 主题会给 `label > input[type=checkbox]` 加 `top:.4rem`（6.4px 下沉）⇒ 归零。
+	'.fzs-opt{display:flex;align-items:center;gap:.4em;font-size:.85em;color:var(--text-color-medium);flex:1;flex-wrap:wrap;min-width:0}',
+	'.fzs-opt>span{white-space:nowrap}',
+	'.fzs-opt input{flex:none;margin:0}',
+	// ★★ 复选框：**用主题原生外观 + 只纠正位移**（2026-10-11 定案，与「锁频段」页一致）。
+	//   走过的弯路：曾自绘一个方框（appearance:none + 自己画勾）——在 Argon 下看着还行，
+	//   但换到别的主题就与主题风格不搭（灰扑扑、像禁用）。
+	//   ⇒ 正解：**不覆盖外观**（各主题的原生勾选框长什么样就什么样），只做两件事：
+	//     ① `flex:none` —— 否则在 flex 容器里被收缩挤成一条（曾经"勾选框不见了"的真因）；
+	//     ② `top:0; margin:0` —— 抵消主题的 `label > input[type=checkbox]{top:.4rem}`（**6.4px 下沉**）。
+	'.fzs-opt input[type=checkbox]{flex:none;top:0;margin:0 .15em 0 0}',
 	// ★ 自定义按钮必须显式写 color：主题会给 button 设自己的文字色（openwrt2020 是白色），
 	//   而 --text-color-* 在它下面未定义 ⇒ 文字会变成"白底白字"、彻底看不见。
 	//   用 inherit 跟正文同色，任何主题都不会瞎。
@@ -81,7 +127,16 @@ return view.extend({
 		var listEl = E('div', {}, [ E('div', { 'class': 'fzs-empty' }, '读取中…') ]);
 		var sentEl = E('div', {}, []);
 		var useEl = E('span', { 'class': 'fzs-sub fzs-use' }, '');
-		var status = E('span', { 'class': 'fzs-status' }, '');
+		// ★★ 一个框一个提示（2026-10-11 用户要求）：
+		//   以前全页共用一个 status，而它挂在最下面「发送短信」旁 ⇒
+		//   在上面的框（转发/存储/清空…）点了操作，提示却在几百像素外、根本看不到。
+		//   ⇒ 现在**每个卡片各有一个提示位**，提示就显示在你点的那排按钮旁边。
+		var stMain = E('span', { 'class': 'fzs-status' }, '');     // 短信中心（启用/关闭）
+		var stInbox = E('span', { 'class': 'fzs-status' }, '');    // 收件箱（清空/删除）
+		var stSent = E('span', { 'class': 'fzs-status' }, '');     // 已发送（清空/删除）
+		var stKeep = E('span', { 'class': 'fzs-status' }, '');     // 存储位置
+		var stFwd = E('span', { 'class': 'fzs-status' }, '');      // 短信转发
+		var status = E('span', { 'class': 'fzs-status' }, '');     // 发送短信（原有）
 
 		// ---- 分页控件 ----
 		function pager(cur, total, go) {
@@ -121,13 +176,13 @@ return view.extend({
 								'class': 'btn cbi-button-negative',
 								click: function() {
 									ui.hideModal();
-									status.textContent = '删除中…';
+									stInbox.textContent = '删除中…';
 									fs.exec(FZS_AT, [ 'sms', 'drop', m.modem, '' + m.idx ]).then(function(r) {
 										var d2 = null;
 										try { d2 = JSON.parse((r && r.stdout) || ''); } catch (e) {}
-										status.textContent = (d2 && d2.ok) ? '✅ 已删除' : ('❌ ' + errMsg(r, d2));
+										stInbox.textContent = (d2 && d2.ok) ? '✅ 已删除' : ('❌ ' + errMsg(r, d2));
 										return loadInbox();
-									}).catch(function(e) { status.textContent = '❌ ' + e; });
+									}).catch(function(e) { stInbox.textContent = '❌ ' + e; });
 								}
 							}, '确认删除')
 						])
@@ -174,13 +229,13 @@ return view.extend({
 								'class': 'btn cbi-button-negative',
 								click: function() {
 									ui.hideModal();
-									status.textContent = '删除中…';
+									stSent.textContent = '删除中…';
 									fs.exec(FZS_AT, [ 'sms', 'dropout', '' + m.ts, m.modem, m.to ]).then(function(r) {
 										var d2 = null;
 										try { d2 = JSON.parse((r && r.stdout) || ''); } catch (e) {}
-										status.textContent = (d2 && d2.ok) ? '✅ 已删除' : ('❌ ' + errMsg(r, d2));
+										stSent.textContent = (d2 && d2.ok) ? '✅ 已删除' : ('❌ ' + errMsg(r, d2));
 										return loadInbox();
-									}).catch(function(e) { status.textContent = '❌ ' + e; });
+									}).catch(function(e) { stSent.textContent = '❌ ' + e; });
 								}
 							}, '确认删除')
 						])
@@ -254,13 +309,13 @@ return view.extend({
 		keepChk.checked = (uci.get('fzs-sms', 'globals', 'keep_in_storage') === '1');
 		keepChk.addEventListener('change', function() {
 			var v = keepChk.checked ? '1' : '0';
-			status.textContent = '保存中…';
+			stKeep.textContent = '保存中…';
 			uci_commit([ 'fzs-sms.globals.keep_in_storage=' + v ], function() {
-				status.textContent = keepChk.checked
+				stKeep.textContent = keepChk.checked
 					? '✅ 已在 SIM 卡上也保存一份（注意：卡满会收不到新短信）'
 					: '✅ 已改为只存设备上';
 			}, function(e) {
-				status.textContent = '❌ 保存失败：' + e;
+				stKeep.textContent = '❌ 保存失败：' + e;
 			});
 		});
 
@@ -276,12 +331,12 @@ return view.extend({
 						'class': 'btn cbi-button-negative',
 						click: function() {
 							ui.hideModal();
-							status.textContent = '清空中…';
+							stInbox.textContent = '清空中…';
 							fs.exec(FZS_AT, [ 'sms', 'clear' ]).then(function() {
 								self._pageIn = 1;
-								status.textContent = '✅ 收件箱已清空';
+								stInbox.textContent = '✅ 收件箱已清空';
 								return loadInbox();
-							}).catch(function(e) { status.textContent = '❌ ' + e; });
+							}).catch(function(e) { stInbox.textContent = '❌ ' + e; });
 						}
 					}, '确认清空')
 				])
@@ -300,12 +355,12 @@ return view.extend({
 						'class': 'btn cbi-button-negative',
 						click: function() {
 							ui.hideModal();
-							status.textContent = '清空中…';
+							stSent.textContent = '清空中…';
 							fs.exec(FZS_AT, [ 'sms', 'clearout' ]).then(function() {
 								self._pageSent = 1;
-								status.textContent = '✅ 已发送留底已清空';
+								stSent.textContent = '✅ 已发送留底已清空';
 								return loadInbox();
-							}).catch(function(e) { status.textContent = '❌ ' + e; });
+							}).catch(function(e) { stSent.textContent = '❌ ' + e; });
 						}
 					}, '确认清空')
 				])
@@ -390,20 +445,21 @@ return view.extend({
 
 		var btnR = E('button', { 'class': 'cbi-button cbi-button-action', click: loadInbox }, '立即刷新');
 		var stamp = E('span', {}, '');
-		var head = E('div', { style: 'display:flex;align-items:center;justify-content:flex-end;gap:.8em;margin-bottom:1em;max-width:900px' }, [ stamp, btnR ]);
+		var head = E('div', { style: 'display:flex;align-items:center;justify-content:flex-end;gap:.8em;margin-bottom:1em' }, [ stamp, btnR ]);
 
 		var inboxCard = E('div', { 'class': 'cbi-section fzs-card' }, [
-			E('h3', { 'class': 'fzs-card-h' }, [ E('span', {}, '收件箱'), useEl, btnClear ]),
+			// 顺序：标题 → 卡内短信(自动右推) → 清空按钮 → 提示位（在**最右**，不挤按钮）
+			E('h3', { 'class': 'fzs-card-h' }, [ E('span', {}, '收件箱'), useEl, btnClear, stInbox ]),
 			E('div', { 'class': 'cbi-section-node fzs-body' }, [ listEl ])
 		]);
 
 		var sentCard = E('div', { 'class': 'cbi-section fzs-card', style: 'margin-top:1em' }, [
-			E('h3', { 'class': 'fzs-card-h' }, [ E('span', {}, '已发送'), E('span', { 'class': 'fzs-sub fzs-use' }, '留底最近 200 条 · 重启后仍在'), btnClearOut ]),
+			E('h3', { 'class': 'fzs-card-h' }, [ E('span', {}, '已发送'), E('span', { 'class': 'fzs-sub fzs-use' }, '留底最近 200 条 · 重启后仍在'), btnClearOut, stSent ]),
 			E('div', { 'class': 'cbi-section-node fzs-body' }, [ sentEl ])
 		]);
 
 		var optCard = E('div', { 'class': 'cbi-section fzs-card', style: 'margin-top:1em' }, [
-			E('h3', { 'class': 'fzs-card-h' }, '短信存储位置'),
+			E('h3', { 'class': 'fzs-card-h' }, [ E('span', {}, '短信存储位置'), stKeep ]),
 			E('div', { 'class': 'cbi-section-node fzs-body' }, [
 				E('div', { 'class': 'fzs-row' }, [
 					E('label', {}, '额外保存'),
@@ -575,7 +631,7 @@ return view.extend({
 			if (chDing.checked) chans.push('dingtalk-bot');
 			if (chFeishu.checked) chans.push('feishu-bot');
 			if (chTg.checked) chans.push('tg-bot');
-			status.textContent = '保存中…';
+			stFwd.textContent = '保存中…';
 			uci_commit([
 				'fzs-sms.globals.fwd_enabled=' + (fwdChk.checked ? '1' : '0'),
 				'fzs-sms.globals.fwd_channels=' + chans.join(','),
@@ -592,20 +648,20 @@ return view.extend({
 				'fzs-sms.globals.fwd_modem1=' + (md1Chk.checked ? '1' : '0'),
 				'fzs-sms.globals.fwd_modem2=' + (md2Chk.checked ? '1' : '0')
 			], function() {
-				status.textContent = '✅ 转发设置已保存（守护下一轮生效）';
+				stFwd.textContent = '✅ 转发设置已保存（守护下一轮生效）';
 			}, function(e) {
-				status.textContent = '❌ 保存失败：' + e;
+				stFwd.textContent = '❌ 保存失败：' + e;
 			});
 		});
 
 		var btnFwdTest = E('button', { 'class': 'cbi-button' }, '发送测试');
 		btnFwdTest.addEventListener('click', function() {
-			status.textContent = '发送测试中…（请确认已先保存设置）';
+			stFwd.textContent = '发送测试中…（请确认已先保存设置）';
 			fs.exec(FZS_AT, [ 'sms', 'fwdtest' ]).then(function(r) {
 				var d = null;
 				try { d = JSON.parse((r && r.stdout) || ''); } catch (e) {}
-				status.textContent = (d && d.ok) ? '✅ 测试消息已发出，请看手机' : ('❌ ' + errMsg(r, d));
-			}).catch(function(e) { status.textContent = '❌ ' + e; });
+				stFwd.textContent = (d && d.ok) ? '✅ 测试消息已发出，请看手机' : ('❌ ' + errMsg(r, d));
+			}).catch(function(e) { stFwd.textContent = '❌ ' + e; });
 		});
 
 		var fwdCard = E('div', { 'class': 'cbi-section fzs-card', style: 'margin-top:1em' }, [
@@ -651,8 +707,41 @@ return view.extend({
 				E('div', { 'class': 'fzs-row' }, [ E('label', {}, 'TG Token'), tgToken ]),
 				E('div', { 'class': 'fzs-row' }, [ E('label', {}, 'TG ChatID'), tgChat ]),
 				E('div', { 'class': 'fzs-row' }, [ E('label', {}, 'TG 反代域名'), tgHost ]),
-				E('div', { 'class': 'fzs-actions' }, [ btnFwdSave, btnFwdTest ]),
+				E('div', { 'class': 'fzs-actions' }, [ btnFwdSave, btnFwdTest, stFwd ]),
 				E('div', { 'class': 'fzs-tip' }, '多个渠道会同时推送；转发内容为「发件人 + 时间 + 正文」。转发失败的短信会自动重试，3 次仍失败则留在设备的 fwdq-failed 目录。转发哪些模组可只选其一；两个都不勾等于不转发。')
+			])
+		]);
+
+		// ---- 短信中心总开关 ----
+		//   关掉后：不再后台轮询短信、也不再收短信（守护停掉）。只影响短信，
+		//   锁频段 / 改串 / APN / 概览等不受影响。
+		//   ★ 保存后立刻生效：先 set+commit，再 start/stop 守护（否则要重启设备才生效）。
+		var muChk = E('input', { type: 'checkbox' });
+		muChk.checked = (uci.get('fzs-sms', 'globals', 'enabled') !== '0');   // 缺省=开
+		muChk.addEventListener('change', function() {
+			var on = muChk.checked;
+			stMain.textContent = '保存中…';
+			uci_commit([ 'fzs-sms.globals.enabled=' + (on ? '1' : '0') ], function() {
+				// ★ 立刻生效：开 → start（把守护拉起来）；关 → stop（停掉守护）。
+				//   关掉时如果守护本来就在跑，不 stop 就要等重启设备才真正停。
+				return fs.exec('/etc/init.d/fzs-sms', [ on ? 'start' : 'stop' ]).then(function() {
+					stMain.textContent = on ? '✅ 短信中心已开启' : '✅ 短信中心已关闭（不再收发短信）';
+				}).catch(function() {
+					// 服务控制失败不算保存失败：配置已落盘，重启设备后同样生效。
+					stMain.textContent = on ? '✅ 已开启（重启设备后生效）' : '✅ 已关闭（重启设备后生效）';
+				});
+			}, function(e) {
+				stMain.textContent = '❌ 保存失败：' + e;
+			});
+		});
+		var mainCard = E('div', { 'class': 'cbi-section fzs-card' }, [
+			E('h3', { 'class': 'fzs-card-h' }, [ E('span', {}, '短信中心'), stMain ]),
+			E('div', { 'class': 'cbi-section-node fzs-body' }, [
+				E('div', { 'class': 'fzs-row' }, [
+					E('label', {}, '启用'),
+					E('label', { 'class': 'fzs-opt' }, [ muChk, E('span', {}, '开启短信收发') ])
+				]),
+				E('div', { 'class': 'fzs-tip' }, '关闭后，设备不再后台接收短信，也不做短信转发——适合插了物联卡、根本用不到短信的情况。不影响锁频段、改串号、APN 和概览。')
 			])
 		]);
 
@@ -666,7 +755,7 @@ return view.extend({
 		reload();
 		poll.add(reload, 10);
 
-		return E('div', {}, [ E('style', {}, CSS), head, inboxCard, sentCard, optCard, fwdCard, composeCard ]);
+		return E('div', {}, [ E('style', {}, CSS), mainCard, head, inboxCard, sentCard, optCard, fwdCard, composeCard ]);
 	},
 
 	// ★★ 关键：必须在 render 之前把配置读进来。

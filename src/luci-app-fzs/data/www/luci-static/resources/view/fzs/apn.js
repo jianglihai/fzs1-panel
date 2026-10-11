@@ -9,8 +9,15 @@ var FZS_AT = '/usr/libexec/fzs-at';
 var APN_PRESETS = [ 'auto', 'cmiot', 'cmnet', '3gnet', 'ctnet' ];
 
 var CSS = [
-	'.fzs-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(340px,1fr));gap:1em;max-width:1100px}',
-	':where(.fzs-card){background:var(--background-color-high, #ffffff);border:1px solid var(--border-color-medium, #d4d8dc);border-radius:6px;overflow:hidden;padding:1em 1.1em}',
+	'.fzs-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(340px,1fr));gap:1em}',
+	':where(.fzs-card){background:var(--background-color-high, #ffffff);border:1px solid var(--border-color-medium, #d4d8dc);border-radius:6px;overflow:hidden}',
+	// ★ 卡片内边距必须由自己给：有的主题把 .cbi-section 的 padding 归零（Argon 就是），
+	//   而 :where() 特异性为 0，会被主题压掉 ⇒ 内容贴到卡片边框上（勾选框贴着边）。
+	//   这里改用普通类选择器提供内边距——主题不认识 .fzs-card/.fzs-body，不会覆盖。
+	'.cbi-section.fzs-card{padding:0}',
+	'.cbi-section.fzs-card>h3{padding:.8em 1.1em}',
+	'.cbi-section.fzs-card>.fzs-body{padding:.15em 1.1em 1.05em;max-width:680px}',
+	'.cbi-section.fzs-card .cbi-section-descr{padding-left:0;padding-right:0}',
 	'.fzs-card-h{display:flex;align-items:center;gap:.6em;flex-wrap:wrap}',
 	'.fzs-card-h .fzs-model{font-size:.8em;font-weight:400;padding:.1em .5em;border-radius:3px;background:var(--background-color-low, #e9ebee);border:1px solid var(--border-color-low, #e5e8eb);color:var(--text-color-medium)}',
 	'.fzs-badge{margin-left:auto;font-size:.78em;padding:.15em .6em;border-radius:10px;font-weight:600}',
@@ -22,6 +29,10 @@ var CSS = [
 	'.fzs-val{font-family:monospace;font-size:.95em;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}',
 	'.fzs-link{font-size:.78em;padding:.15em .5em;border-radius:3px;background:var(--background-color-low, #e9ebee);border:1px solid var(--border-color-low, #e5e8eb);color:var(--text-color-medium)}',
 	'.fzs-actions{margin-top:.9em;display:flex;gap:.6em;align-items:center;flex-wrap:wrap}',
+	// ★ 真禁用必须"一眼看出禁用"（2026-10-11）：主题给中性按钮灰底灰字，与"禁用态"太像，
+	//   用户会误以为可点的中性按钮是禁用的。这里把**真正 disabled** 的按钮明确淡掉 + 禁止光标。
+	//   `:where()` 保证特异性为 0，主题若有自己的禁用样式仍可覆盖。
+	':where(.fzs-actions button:disabled,.fzs-card button:disabled){opacity:.45;cursor:not-allowed;filter:grayscale(.4)}',
 	'.fzs-status{font-size:.85em}',
 	'.fzs-err{color:var(--text-color-low);font-size:.85em;min-height:1.2em;margin:.15em 0}',
 	'.fzs-hint{font-size:.82em;color:var(--text-color-medium);line-height:1.5;padding:.2em 0 .1em}',
@@ -133,7 +144,9 @@ return view.extend({
 				]);
 			});
 
-			var btnToggle = E('button', { 'class': 'cbi-button' }, '停用数据');
+			// ★ 用 cbi-button-action（主色/蓝）：这是**主操作**，且「停用数据」会断网、不能看着像禁用。
+			//   裸 `cbi-button` 是中性灰底灰字，视觉上极易被误认为"不可点"。
+			var btnToggle = E('button', { 'class': 'cbi-button cbi-button-action' }, '停用数据');
 			btnToggle.addEventListener('click', function() {
 				var m = c.data || {};
 				if (!m.cfg) { status.textContent = '还没读到模组状态，先点「刷新」'; return; }
@@ -168,7 +181,7 @@ return view.extend({
 				}
 			});
 
-			var btnFly = E('button', { 'class': 'cbi-button' }, '飞行模式');
+			var btnFly = E('button', { 'class': 'cbi-button cbi-button-action' }, '飞行模式');
 			btnFly.addEventListener('click', function() {
 				var m = c.data || {};
 				if (!m.cfg) { status.textContent = '还没读到模组状态，先点「立即刷新」'; return; }
@@ -289,9 +302,9 @@ return view.extend({
 		]);
 
 		var btn = E('button', { 'class': 'cbi-button cbi-button-action', click: refresh }, '立即刷新');
-		var head = E('div', { style: 'display:flex;align-items:center;justify-content:flex-end;gap:.8em;margin-bottom:1em;max-width:1100px' }, [ stamp, btn ]);
+		var head = E('div', { style: 'display:flex;align-items:center;justify-content:flex-end;gap:.8em;margin-bottom:1em' }, [ stamp, btn ]);
 
-		var warn = E('div', { 'class': 'fzs-warn', style: 'max-width:1100px' }, [
+		var warn = E('div', { 'class': 'fzs-warn' }, [
 			E('b', {}, '数据 关'), ' = 停掉模组数据通路并撤销系统接口，流量由另一模组接管；重新启用后约 ',
 			E('b', {}, '40 秒'), '才会重新参与流量分流。',
 			E('br'),

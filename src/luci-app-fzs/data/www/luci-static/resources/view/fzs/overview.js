@@ -12,7 +12,14 @@ var REPO_SIS = 'https://github.com/zzt718/fzs1-decloud';
 
 var CSS = [
 	'.fzs-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(340px,1fr));gap:1em}',
-	':where(.fzs-card){background:var(--background-color-high, #ffffff);border:1px solid var(--border-color-medium, #d4d8dc);border-radius:6px;overflow:hidden;padding:1em 1.1em}',
+	':where(.fzs-card){background:var(--background-color-high, #ffffff);border:1px solid var(--border-color-medium, #d4d8dc);border-radius:6px;overflow:hidden}',
+	// ★ 卡片内边距必须由自己给：有的主题把 .cbi-section 的 padding 归零（Argon 就是），
+	//   而 :where() 特异性为 0，会被主题压掉 ⇒ 内容贴到卡片边框上（勾选框贴着边）。
+	//   这里改用普通类选择器提供内边距——主题不认识 .fzs-card/.fzs-body，不会覆盖。
+	'.cbi-section.fzs-card{padding:0}',
+	'.cbi-section.fzs-card>h3{padding:.8em 1.1em}',
+	'.cbi-section.fzs-card>.fzs-body{padding:.15em 1.1em 1.05em;max-width:680px}',
+	'.cbi-section.fzs-card .cbi-section-descr{padding-left:0;padding-right:0}',
 	'.fzs-card-h{display:flex;align-items:center;gap:.6em;flex-wrap:wrap}',
 	'.fzs-card-h .fzs-name{font-weight:700;font-size:1.05em}',
 	'.fzs-card-h .fzs-model{font-size:.8em;padding:.1em .5em;border-radius:3px;background:var(--background-color-low, #e9ebee);border:1px solid var(--border-color-low, #e5e8eb);color:var(--text-color-medium)}',
@@ -129,7 +136,9 @@ function modemCard(m) {
 				E('span', { 'class': 'fzs-name' }, (m && m.name) || '模组'),
 				E('span', { 'class': 'fzs-badge bad' }, '未连接')
 			]),
-			E('div', { 'class': 'fzs-empty' }, (m && m.err) || '读取失败')
+			E('div', { 'class': 'cbi-section-node fzs-body' }, [
+				E('div', { 'class': 'fzs-empty' }, (m && m.err) || '读取失败')
+			])
 		]);
 
 	var si = rsrpInfo(m.rsrp);
@@ -178,7 +187,9 @@ function tile(href, icon, title, desc) {
 function placeholder(name) {
 	return E('div', { 'class': 'cbi-section fzs-card' }, [
 		E('h3', { 'class': 'fzs-card-h' }, [ E('span', { 'class': 'fzs-name' }, name) ]),
-		E('div', { 'class': 'fzs-empty' }, '读取中…')
+		E('div', { 'class': 'cbi-section-node fzs-body' }, [
+			E('div', { 'class': 'fzs-empty' }, '读取中…')
+		])
 	]);
 }
 

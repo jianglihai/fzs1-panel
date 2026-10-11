@@ -488,7 +488,23 @@ damages arising from the use of this project.
 
 > Versions track the `luci-app-fzs` .ipk version.
 
-### v0.2.7 (2026-10-10, current)
+### v0.2.7-32 (2026-10-11, current)
+
+**Much lower background load + SMS master switch + multi-theme support**
+
+- **SMS daemon load**: whole-device CPU **14.1% → 3.7%**, process creations per second **18.3 → 3.7**
+  (measured on a single-core 580 MHz SoC). How: an unregistered modem automatically polls less often
+  (every 20 s, while a modem with a SIM keeps polling every 2 s — decided **per modem**);
+  each round's reads are merged into a single call; per-round shell helpers were made built-in.
+- **SMS master switch**: users who don't need SMS (e.g. an IoT-only SIM) can turn it off with one click;
+  polling and receiving stop and the footprint drops to zero. SMS only — band lock / IMEI / APN /
+  overview are unaffected.
+- **Multi-theme support** (Argon / Bootstrap, etc.): fixed card padding and width, checkbox alignment
+  and card-title layout; primary actions such as "Disable data" / "Airplane mode" now use the accent
+  colour (grey used to look disabled); each card on the SMS page now shows its own result message.
+- Compatible with the newer community firmware (OpenWrt 23.05).
+
+### v0.2.7 (2026-10-10)
 
 **New "Network Settings" page; Overview "About" dialog and open-source licence**
 

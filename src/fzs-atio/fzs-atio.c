@@ -50,12 +50,15 @@
 #endif
 
 #include <ctype.h>
+#include <dirent.h>
 #include <errno.h>
 #include <fcntl.h>
+#include <limits.h>
 #include <poll.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/file.h>
 #include <termios.h>
 #include <time.h>
 #include <unistd.h>
@@ -75,6 +78,12 @@
 
 static unsigned char rbuf[RBUF_SZ];
 static size_t rlen = 0;
+
+/* 批量模式（-b）的"整轮捕获"缓冲：一次会话的全部响应攒在这里，
+ * 供 count_answers() 数应答行、并原样写进该模组的输出文件。 */
+static char cap_buf[256 * 1024];
+static size_t cap_len = 0;
+static int cap_on = 0;
 
 /* ---------------------------------------------------------------- 小工具 */
 
@@ -100,10 +109,21 @@ static int write_all(int fd, const void *buf, size_t n)
     return 0;
 }
 
-/* 把当前缓冲输出到 stdout（去掉 '\r'，与 tr -d '\r' 行为一致），然后清空 */
+/* 把当前缓冲输出到 stdout（去掉 '\r'，与 tr -d '\r' 行为一致），然后清空。
+ * 批量模式（-b）下改为攒进内存：既要数"应答行数"判完整性，又要写进各自的输出文件。 */
 static void out_flush(void)
 {
     size_t i;
+
+    if (cap_on) {
+        for (i = 0; i < rlen && cap_len + 1 < sizeof(cap_buf); i++) {
+            if (rbuf[i] != '\r') cap_buf[cap_len++] = rbuf[i];
+        }
+        cap_buf[cap_len] = '\0';
+        rlen = 0;
+        return;
+    }
+
     for (i = 0; i < rlen; i++) {
         if (rbuf[i] != '\r') putchar(rbuf[i]);
     }
@@ -449,6 +469,236 @@ static int run_sms(int fd, const char *len, const char *pdu, int timeout_ms)
 
 /* ---------------------------------------------------------------- 入口 */
 
+/* ====================================================== 批量轮询（-b） ====
+ *
+ * 为什么要有它：短信守护每 2 秒要读一次两个模组。原先的做法是"每模组起一层
+ * shell + 若干小命令（readlink/cat/grep/flock…）"，实测**一轮 40 个进程**、
+ * fork 18 次/秒 —— 在单核 580MHz 上是实打实的负担（实测整机 CPU 14~16%）。
+ * 而真正必要的只有一件事：开串口、发命令、收响应。
+ *   ⇒ 把这件事收进**一个进程**：一次调用读完全部模组。
+ *
+ * 与 shell 版 fzs-at 的判据**逐条对齐**（否则会出现"读到一半当成功"的脏数据）：
+ *   · 完整性：**应答行数恰好 = 2 + 命令数**（2 = 会话开头的 AT + ATE0）；
+ *     少于期望（丢应答，模组忙）要重试；**多于期望**（实测模组忙时整份响应重复，
+ *     会导致同一条短信重复入库）也必须重试；
+ *   · 最多 3 次尝试，每次之间等 1 秒；
+ *   · 首条（AT 热身）超时 = 模组正忙 → 放弃本次尝试（逐条空等没有意义）；
+ *   · 3 次都不合格 → **写空文件**（宁可当"本轮没读到"，绝不交出可能翻倍的脏数据）。
+ * 另外：串口锁与 shell 版共用同一个文件（/tmp/fzs-at-<端口>.lock），
+ *       但用的是 flock(2) 系统调用 —— 内核持锁，**不额外起进程**。
+ */
+#define BATCH_MAX_ARGS 10
+#define BATCH_MAX_CMDS 32
+#define BATCH_TRIES    3
+
+static void sleep_ms(int ms)
+{
+    struct timespec ts;
+    ts.tv_sec = ms / 1000;
+    ts.tv_nsec = (long)(ms % 1000) * 1000000L;
+    nanosleep(&ts, NULL);
+}
+
+/* 数"应答行"：行首为 OK / ERROR / +CME ERROR / +CMS ERROR（与 shell 的 grep -cE 一致） */
+static int count_answers(const char *s)
+{
+    int n = 0;
+    const char *p = s;
+
+    while (*p) {
+        const char *e = strchr(p, '\n');
+        size_t l = e ? (size_t)(e - p) : strlen(p);
+
+        if ((l >= 2 && memcmp(p, "OK", 2) == 0) ||
+            (l >= 5 && memcmp(p, "ERROR", 5) == 0) ||
+            (l >= 10 && memcmp(p, "+CME ERROR", 10) == 0) ||
+            (l >= 10 && memcmp(p, "+CMS ERROR", 10) == 0))
+            n++;
+        if (!e) break;
+        p = e + 1;
+    }
+    return n;
+}
+
+/* 读命令文件（空行与 # 开头的行忽略） */
+static int read_cmds(const char *path, char cmds[][128], int maxn)
+{
+    FILE *f = fopen(path, "r");
+    char line[256];
+    int n = 0;
+
+    if (!f) return -1;
+    while (fgets(line, sizeof(line), f) && n < maxn) {
+        size_t l = strlen(line), s = 0;
+
+        while (l > 0 && (line[l - 1] == '\n' || line[l - 1] == '\r')) line[--l] = '\0';
+        while (line[s] == ' ' || line[s] == '\t') s++;
+        if (line[s] == '\0' || line[s] == '#') continue;
+        snprintf(cmds[n], 128, "%s", line + s);
+        n++;
+    }
+    fclose(f);
+    return n;
+}
+
+/* 目标 → 设备节点。规则与 shell 版 fzs-at 完全一致：
+ *   /dev/ttyUSBx 或 ttyUSBx 直接使用；modem1/ec200t/1/t → idProduct 6026（EC200T）；
+ *   modem2/ec200n/2/n → 6002（EC200N）；在 /sys/class/tty 里找"接口路径含 :1.4"的那个口。
+ *   ★ 全程用 libc（realpath/open+read），不起任何子进程 —— 这正是替代 readlink+cat 的关键。 */
+static int resolve_port(const char *spec, char *out, size_t outsz)
+{
+    const char *want = NULL;
+    DIR *d;
+    struct dirent *de;
+
+    if (strncmp(spec, "/dev/", 5) == 0 || strncmp(spec, "ttyUSB", 6) == 0) {
+        snprintf(out, outsz, spec[0] == '/' ? "%s" : "/dev/%s", spec);
+        return 0;
+    }
+    if (!strcmp(spec, "modem1") || !strcmp(spec, "ec200t") || !strcmp(spec, "EC200T") ||
+        !strcmp(spec, "1") || !strcmp(spec, "t") || !strcmp(spec, "T"))
+        want = "6026";
+    else if (!strcmp(spec, "modem2") || !strcmp(spec, "ec200n") || !strcmp(spec, "EC200N") ||
+             !strcmp(spec, "2") || !strcmp(spec, "n") || !strcmp(spec, "N"))
+        want = "6002";
+    else
+        return -1;
+
+    d = opendir("/sys/class/tty");
+    if (!d) return -1;
+    while ((de = readdir(d)) != NULL) {
+        char path[PATH_MAX], real[PATH_MAX], up[PATH_MAX];
+        int i;
+
+        if (strncmp(de->d_name, "ttyUSB", 6) != 0) continue;
+        snprintf(path, sizeof(path), "/sys/class/tty/%s/device", de->d_name);
+        if (realpath(path, real) == NULL) continue;
+        if (strstr(real, ":1.4") == NULL) continue;      /* 只认 AT 口那个接口 */
+
+        snprintf(up, sizeof(up), "%s", real);
+        for (i = 0; i < 6; i++) {                        /* 向上找 idProduct（同 shell 的 find_up） */
+            char f[PATH_MAX], buf[16];
+            FILE *fp;
+            char *slash;
+
+            snprintf(f, sizeof(f), "%s/idProduct", up);
+            fp = fopen(f, "r");
+            if (fp) {
+                if (fgets(buf, sizeof(buf), fp)) {
+                    size_t l = strlen(buf);
+                    while (l > 0 && (buf[l - 1] == '\n' || buf[l - 1] == '\r')) buf[--l] = '\0';
+                    if (strcmp(buf, want) == 0) {
+                        fclose(fp);
+                        closedir(d);
+                        snprintf(out, outsz, "/dev/%s", de->d_name);
+                        return 0;
+                    }
+                }
+                fclose(fp);
+            }
+            slash = strrchr(up, '/');
+            if (slash == NULL || slash == up) break;
+            *slash = '\0';
+        }
+    }
+    closedir(d);
+    return -1;
+}
+
+static void write_file(const char *path, const char *data, size_t n)
+{
+    FILE *f = fopen(path, "w");
+    if (!f) return;
+    if (n) fwrite(data, 1, n, f);
+    fclose(f);
+}
+
+static int run_batch(const char *cmdfile, const char *const *pairs, int npairs,
+                     int timeout_ms, int drain_ms)
+{
+    char cmds[BATCH_MAX_CMDS][128];
+    int ncmd = read_cmds(cmdfile, cmds, BATCH_MAX_CMDS);
+    int bad = 0, i;
+
+    if (ncmd <= 0) {
+        fprintf(stderr, "fzs-atio: 命令文件读不到或没有有效命令：%s\n", cmdfile);
+        return 2;
+    }
+
+    for (i = 0; i < npairs; i++) {
+        const char *spec = pairs[i * 2], *outf = pairs[i * 2 + 1];
+        char dev[PATH_MAX], lockpath[PATH_MAX];
+        int fd, lf, attempt, ok = 0;
+
+        if (resolve_port(spec, dev, sizeof(dev)) != 0) {
+            fprintf(stderr, "fzs-atio: [%s] 找不到 AT 口\n", spec);
+            write_file(outf, "", 0);
+            bad = 1;
+            continue;
+        }
+
+        snprintf(lockpath, sizeof(lockpath), "/tmp/fzs-at-%s.lock", strrchr(dev, '/') + 1);
+        lf = open(lockpath, O_CREAT | O_RDWR, 0644);
+        if (lf >= 0) flock(lf, LOCK_EX);                 /* 与 shell 版共用同一把锁 */
+
+        fd = serial_open(dev);
+        if (fd < 0) {
+            fprintf(stderr, "fzs-atio: [%s] 打不开 %s: %s\n", spec, dev, strerror(errno));
+            write_file(outf, "", 0);
+            if (lf >= 0) close(lf);
+            bad = 1;
+            continue;
+        }
+
+        for (attempt = 1; attempt <= BATCH_TRIES && !ok; attempt++) {
+            int k, st, nans;
+
+            cap_len = 0;
+            cap_buf[0] = '\0';
+            cap_on = 1;
+            rlen = 0;
+            if (drain_ms > 0) drain(fd, drain_ms);
+
+            st = do_cmd(fd, "AT", timeout_ms);
+            out_flush();
+            if (st == R_TIMEOUT) {                       /* 热身就超时 = 模组忙，别逐条空等 */
+                cap_on = 0;
+                if (attempt < BATCH_TRIES) sleep_ms(1000);
+                continue;
+            }
+            if (st == R_IOERR) break;
+
+            st = do_cmd(fd, "ATE0", timeout_ms);
+            out_flush();
+            if (st == R_IOERR) break;
+
+            for (k = 0; k < ncmd; k++) {
+                st = do_cmd(fd, cmds[k], timeout_ms);
+                out_flush();
+                if (st == R_IOERR) break;
+                if (st == R_TIMEOUT) { drain(fd, 200); break; }
+            }
+
+            nans = count_answers(cap_buf);
+            if (nans == 2 + ncmd) {
+                ok = 1;
+            } else {
+                fprintf(stderr, "fzs-atio: [%s] 第 %d 次应答数 %d ≠ 期望 %d，重试\n",
+                        spec, attempt, nans, 2 + ncmd);
+                if (attempt < BATCH_TRIES) sleep_ms(1000);
+            }
+            cap_on = 0;
+        }
+
+        if (ok) write_file(outf, cap_buf, cap_len);
+        else    write_file(outf, "", 0);                 /* 不合格 → 空（下轮再读，不丢短信） */
+        if (!ok) bad = 1;
+        close(fd);
+        if (lf >= 0) close(lf);
+    }
+    return bad ? 1 : 0;
+}
+
 static void usage(void)
 {
     fprintf(stderr,
@@ -459,6 +709,9 @@ static void usage(void)
         "      从 stdin 逐行读 AT 命令（空行/以 # 开头的行忽略）\n"
         "  fzs-atio [-t 超时ms] [-d 排空ms] -m sms <设备> <TPDU字节数> <PDU的hex>\n"
         "      发送一条短信（纯 PDU）\n"
+        "  fzs-atio [-t 超时ms] [-d 排空ms] -b <命令文件> <目标> <输出文件> [<目标> <输出文件> ...]\n"
+        "      批量轮询：一个进程读完全部模组（命令从文件读；含完整性判据与 3 次重试；\n"
+        "      不合格则写空文件）。目标可写 modem1/modem2/ec200t/ec200n 或 /dev/ttyUSBx\n"
         "\n"
         "默认: -t %d  -d %d\n"
         "退出码: 0 全部有应答 / 1 超时 / 2 参数错 / 3 打不开串口 / 4 读错误\n",
@@ -468,7 +721,8 @@ static void usage(void)
 int main(int argc, char **argv)
 {
     const char *dev = NULL;
-    const char *pos[4];
+    const char *cmdfile = NULL;
+    const char *pos[BATCH_MAX_ARGS];
     int npos = 0;
     int timeout_ms = DEF_TIMEOUT_MS;
     int drain_ms = DEF_DRAIN_MS;
@@ -484,6 +738,8 @@ int main(int argc, char **argv)
             } else if (strcmp(a, "-d") == 0 && i + 1 < argc) {
                 drain_ms = atoi(argv[++i]);
                 if (drain_ms < 0) { fprintf(stderr, "fzs-atio: 排空时长不能为负\n"); return 2; }
+            } else if (strcmp(a, "-b") == 0 && i + 1 < argc) {
+                cmdfile = argv[++i];
             } else if (strcmp(a, "-m") == 0 && i + 1 < argc) {
                 const char *m = argv[++i];
                 if (strcmp(m, "sms") == 0) sms_mode = 1;
@@ -496,12 +752,21 @@ int main(int argc, char **argv)
                 usage();
                 return 2;
             }
-        } else if (npos < 4) {
+        } else if (npos < BATCH_MAX_ARGS) {
             pos[npos++] = a;
         } else {
             fprintf(stderr, "fzs-atio: 参数过多\n");
             return 2;
         }
+    }
+
+    /* 批量轮询：走"一次读完全部模组"的路径，不碰单设备逻辑 */
+    if (cmdfile != NULL) {
+        if (npos < 2 || npos % 2 != 0) {
+            fprintf(stderr, "fzs-atio: -b 需要 <目标> <输出文件> 成对出现\n");
+            return 2;
+        }
+        return run_batch(cmdfile, pos, npos / 2, timeout_ms, drain_ms);
     }
 
     if (npos < 1) { usage(); return 2; }
