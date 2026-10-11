@@ -9,21 +9,25 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 OLD = r"C:\Users\zzt\.zcode\workspace\default\fzs1_decloud"
 OWNER, REPO = "zzt718", "fzs1-panel"
 
-TAG = sys.argv[1] if len(sys.argv) > 1 else "v0.2.7-21"
+TAG = sys.argv[1] if len(sys.argv) > 1 else "v0.2.8"
 IPK = sys.argv[2] if len(sys.argv) > 2 else os.path.join(
-    os.path.dirname(HERE), "src", "dist", "luci-app-fzs_0.2.7-21_all.ipk")
+    os.path.dirname(HERE), "src", "dist", "luci-app-fzs_0.2.8_all.ipk")
 
-BODY = """**luci-app-fzs（蜂助手面板）v0.2.7-21**
+BODY = """**luci-app-fzs（蜂助手面板）v0.2.8**
 
 适用于 MIBOX-668M2 / 蜂助手 S1（MT7628 + EC200T + EC200N），社区 OpenWrt 22.03+（LuCI）。
 
 ## 下载
-- 下方附件 `luci-app-fzs_0.2.7-21_all.ipk` —— 在 LuCI「系统 → 软件包 → 上传软件包」安装。
+- 下方附件 `luci-app-fzs_0.2.8_all.ipk` —— 在 LuCI「系统 → 软件包 → 上传软件包」安装。
 
 ## 更新要点
-- 新增「关于」弹窗（概览页页脚入口）：适用范围 / 开源许可 / 致谢 / 免责声明
-- 许可证正式定为 GPL-3.0-or-later，仓库随附全文
-- 概览页脚显示面板版本号
+- **后台负载大幅下降**：整机 CPU **14.1% → 3.7%**、每秒新建进程 **18.3 → 3.7**（单核 580MHz 实测）。
+  未注册的模组自动降频（20 秒一轮；有卡的模组照旧 2 秒，**按模组独立判断**），每轮读取合为一次调用。
+- **短信中心总开关**：不需要短信的用户可一键关闭，不再后台轮询、不再收短信，占用归零。
+  只影响短信；锁频段 / 改串 / APN / 概览不受影响。
+- **多主题适配**（Argon / Bootstrap 等）：修正卡片内边距与宽度、复选框对齐、卡片标题排版；
+  「停用数据」「飞行模式」等主操作按钮改为醒目主色；短信页各卡片各自显示操作结果。
+- 兼容新版社区固件（OpenWrt 23.05）。
 
 完整功能与安装说明见 [README](https://github.com/zzt718/fzs1-panel#readme)。
 """

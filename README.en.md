@@ -486,22 +486,54 @@ damages arising from the use of this project.
 
 ## Changelog
 
-> Versions track the `luci-app-fzs` .ipk version.
+> Versions track the public version of `luci-app-fzs` (e.g. `0.2.8`).
 
-### v0.2.7-32 (2026-10-11, current)
+### v0.2.8 (2026-10-11, current)
 
-**Much lower background load + SMS master switch + multi-theme support**
+**Much lower background load · SMS master switch · multi-theme support · assorted UI fixes**
 
-- **SMS daemon load**: whole-device CPU **14.1% → 3.7%**, process creations per second **18.3 → 3.7**
-  (measured on a single-core 580 MHz SoC). How: an unregistered modem automatically polls less often
-  (every 20 s, while a modem with a SIM keeps polling every 2 s — decided **per modem**);
-  each round's reads are merged into a single call; per-round shell helpers were made built-in.
-- **SMS master switch**: users who don't need SMS (e.g. an IoT-only SIM) can turn it off with one click;
-  polling and receiving stop and the footprint drops to zero. SMS only — band lock / IMEI / APN /
-  overview are unaffected.
-- **Multi-theme support** (Argon / Bootstrap, etc.): fixed card padding and width, checkbox alignment
-  and card-title layout; primary actions such as "Disable data" / "Airplane mode" now use the accent
-  colour (grey used to look disabled); each card on the SMS page now shows its own result message.
+**1. Background load (the biggest change)**
+
+The panel runs in the background all the time, so its CPU cost directly affects how fast the device
+feels. This release cuts the SMS daemon's cost to roughly a quarter of what it was:
+
+- Whole-device CPU **14.1% → 3.7%**, process creations per second **18.3 → 3.7** (measured on a
+  single-core 580 MHz SoC);
+- **An unregistered modem now polls less often**: a modem without a SIM polls every 20 s while one
+  with a SIM keeps polling every 2 s — **each modem is decided independently**;
+- **Each round's reads are merged into a single call** (previously each modem spawned its own batch);
+- **Per-round shell helpers were made built-in** (previously several tiny programs were spawned each round);
+- **With no SIM inserted, usage is near zero** (measured device load drops to around `0.01`).
+
+**2. SMS master switch**
+
+- A **"enable / disable" switch** is added at the top of the SMS page. Users with an IoT-only SIM
+  (who never need SMS) can turn the whole feature off **in one click**;
+- Once off, **background polling, receiving and forwarding all stop** and the footprint drops to zero;
+  turning it back on restores everything;
+- **SMS only**: band lock, IMEI, APN and the overview page are all unaffected.
+
+**3. Multi-theme support**
+
+Different LuCI themes (each with its own colours and control styles) used to make the layout misalign.
+This release fixes it point by point:
+
+- Fixed card padding and width (previously, under the Argon theme, content stuck to the edge with a
+  large blank area on the right);
+- Fixed checkbox alignment (previously, under some themes, checkboxes "sank" or were squeezed into an
+  invisible sliver);
+- Fixed card-title layout (title, description and buttons now sit in their proper places instead of
+  running together);
+- **Primary actions such as "Disable data", "Airplane mode" and "Restore factory bands" now use the
+  accent colour** — they used to be the same grey as ordinary buttons and **could easily be mistaken
+  for "not clickable"**;
+- **Genuinely disabled** buttons are now clearly greyed out (so clickable ordinary buttons are no longer
+  confused with them).
+
+**4. Other fixes**
+
+- On the SMS page, **each card now shows its own result message** (previously every message was
+  dumped at the very bottom of the page, so actions in the cards above gave no visible feedback);
 - Compatible with the newer community firmware (OpenWrt 23.05).
 
 ### v0.2.7 (2026-10-10)
