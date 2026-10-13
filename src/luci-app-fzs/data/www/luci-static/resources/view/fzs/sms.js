@@ -738,8 +738,11 @@ return view.extend({
 			E('h3', { 'class': 'fzs-card-h' }, [ E('span', {}, '短信中心'), stMain ]),
 			E('div', { 'class': 'cbi-section-node fzs-body' }, [
 				E('div', { 'class': 'fzs-row' }, [
-					E('label', {}, '启用'),
-					E('label', { 'class': 'fzs-opt' }, [ muChk, E('span', {}, '开启短信收发') ])
+					// ★ 这一栏原来叫「启用 / 开启短信收发」，而下面还有一张卡叫「短信转发」——
+					//   两组词只差一个字，扫一眼容易看走眼。改成"总开关 / 启用短信功能"，
+					//   把"发"这个字从这一栏彻底拿掉。
+					E('label', {}, '总开关'),
+					E('label', { 'class': 'fzs-opt' }, [ muChk, E('span', {}, '启用短信功能') ])
 				]),
 				E('div', { 'class': 'fzs-tip' }, '关闭后，设备不再后台接收短信，也不做短信转发——适合插了物联卡、根本用不到短信的情况。不影响锁频段、改串号、APN 和概览。')
 			])

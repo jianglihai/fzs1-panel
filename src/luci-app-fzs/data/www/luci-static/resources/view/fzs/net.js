@@ -18,6 +18,7 @@
  */
 
 var FZS_NET = '/usr/libexec/fzs-net';
+var FZS_WIFI = '/usr/libexec/fzs-wifi';
 var UCI = '/sbin/uci';
 
 // note 是「仅用有线」专用的一句提醒：该模式下 4G 模组仍在，mwan3 会继续周期性探测它
@@ -61,6 +62,9 @@ var CSS = [
 	'.cbi-section.fzs-card .cbi-section-descr{padding-left:0;padding-right:0}',
 	'.fzs-opt{display:flex;align-items:flex-start;gap:.55em;cursor:pointer;padding:.5em 0}',
 	'.fzs-opt input{margin-top:.3em;flex:none}',
+	// ★ 复选框一律"主题原生外观 + 只纠正位移"（不自绘）：主题给了
+	//   `label > input[type=checkbox]{position:relative;top:.4rem}`（= 6.4px 下沉）⇒ 把 top 归零即可。
+	'.fzs-opt input[type=checkbox]{top:0}',
 	// ★ 单选圈必须**自绘**，不能用浏览器原生外观：
 	//   有的主题（如 openwrt2020）用 `*{border:none;background:none;-webkit-appearance:none}`
 	//   抹平全部原生控件，却只给 checkbox 写了恢复规则，radio 一条都没有
@@ -123,6 +127,16 @@ function call(args) {
 	}).catch(function() { return { ok: false, err: '调用失败' }; });
 }
 
+// 无线功率：调 /usr/libexec/fzs-wifi（改国家码+功率都在后端做，含"等稳定验证、失败自动还原"）。
+// 与 call() 的区别：这里把后端返回的**原样**交出去（ok:false 时也带 err 供页面显示）。
+function callWifi(args) {
+	return fs.exec(FZS_WIFI, args).then(function(r) {
+		var d = null;
+		try { d = JSON.parse((r && r.stdout) || ''); } catch (e) {}
+		return d || { ok: false, err: '执行失败' };
+	}).catch(function() { return { ok: false, err: '调用失败' }; });
+}
+
 function uciSet(k, v) {
 	return fs.exec(UCI, [ '-q', 'set', k + '=' + v ]).then(function() {
 		return fs.exec(UCI, [ '-q', 'commit', 'mifi' ]);
@@ -138,10 +152,17 @@ function nameOf(list, v) {
 return view.extend({
 	load: function() {
 		L.env.rpctimeout = 120;
-		return call([ 'show' ]);
+		return Promise.all([
+			call([ 'show' ]),
+			callWifi([ 'status' ])
+		]).then(function(r) {
+			return { net: r[0], wifi: r[1] };
+		});
 	},
 
-	render: function(st) {
+	render: function(res) {
+		var st = (res && res.net) || { ok: false };    // 上网设置（fzs-net show）
+		var wf = (res && res.wifi) || { ok: false };   // 无线功率（fzs-wifi status）
 		var wrap = E('div', {});
 		var flash = {};          // 每块卡的状态提示；重绘后仍能保留
 		var portSel = null;      // 网口块的当前选择（未提交）；重绘后仍能保留，提交成功后复位
@@ -174,7 +195,7 @@ return view.extend({
 			wrap.appendChild(routeCard());
 			wrap.appendChild(powerCard());
 			wrap.appendChild(portCard());
-			wrap.appendChild(noteCard());
+			wrap.appendChild(wifiCard());
 		}
 
 		function refresh() {
@@ -184,15 +205,16 @@ return view.extend({
 			});
 		}
 
-		function confirmBox(title, lines, onOk) {
+		// onCancel 用于"控件已经先动了、但用户取消"的场景（如勾选框）——把控件恢复原状。
+		function confirmBox(title, lines, onOk, okLabel, onCancel) {
 			ui.showModal(title, [
 				E('div', {}, lines),
 				E('div', { 'class': 'right' }, [
-					E('button', { 'class': 'btn', click: ui.hideModal }, '取消'),
+					E('button', { 'class': 'btn', click: function() { ui.hideModal(); if (onCancel) onCancel(); } }, '取消'),
 					E('button', {
 						'class': 'btn cbi-button cbi-button-apply',
 						click: function() { ui.hideModal(); onOk(); }
-					}, '确认')
+					}, okLabel || '确认')
 				])
 			]);
 		}
@@ -261,6 +283,17 @@ return view.extend({
 			body.push(E('div', { 'class': 'fzs-actions' }, [
 				E('button', { 'class': 'cbi-button cbi-button-apply', click: save }, '保存'),
 				statusEl('route')
+			]));
+			// 「上网方式」这一栏才是用 MultiWAN 做的 —— 说明与入口就贴在这一栏底下。
+			// （以前这段挂在页面最底那张叫「高级」的卡里，说的是"本页"，可 4G 模组 / 网口 / 无线都不是
+			//   MultiWAN 做的 ⇒ 一句话错三次；搬到这里归属才对。）
+			body.push(E('div', { 'class': 'fzs-grp' }, [
+				E('div', { 'class': 'cbi-section-descr' },
+					'这一栏是用 MultiWAN 做的；想按目标地址等条件做更细的分流，可以到 MultiWAN 管理器里设。'),
+				E('a', {
+					'class': 'btn cbi-button',
+					href: L.url('admin/network/mwan3')
+				}, '打开 MultiWAN 管理器')
 			]));
 
 			return section('上网方式', body);
@@ -410,17 +443,88 @@ return view.extend({
 			]);
 		}
 
-		// ---------------- ④ 高级 ----------------
-		function noteCard() {
-			return section('高级', [
-				E('div', {}, '本页的选项是通过 MultiWAN 实现的。想按目标地址等方式做更细的策略，可以自己到 MultiWAN 管理器设置。'),
-				E('div', { 'class': 'fzs-actions' }, [
-					E('a', {
-						'class': 'btn cbi-button',
-						href: L.url('admin/network/mwan3')
-					}, '打开 MultiWAN 管理器')
-				])
-			]);
+		// ---------------- ④ 无线网络（2.4G 发射功率） ----------------
+		// 全部动作在后端 /usr/libexec/fzs-wifi：改 country + txpower、等无线稳定、不达标自动还原。
+		// 这里只负责渲染与提交。
+		// ★ 明面上**不写效果承诺、也不写"不及原厂"** —— 那句挪进确认弹窗：不想碰这个开关的人，
+		//   不该先被一段文字劝退；真要用的人，在按下确认前把话说清楚。
+		function wifiCard() {
+			var sup = !!(wf && wf.ok && wf.supported);
+			var on = !!(wf && wf.unlocked);
+			var cur = (wf && wf.dbm) ? wf.dbm : '';
+			var onDbm = (wf && wf.on_dbm) || 23;
+			var offDbm = (wf && wf.off_dbm) || 20;
+
+			var chk = E('input', { type: 'checkbox' });
+			chk.checked = on;                       // ★ 设 DOM property，绝不写成 HTML 属性
+
+			function apply(want) {
+				chk.disabled = true;
+				setMsg('wifi', mInfo('应用中…无线会断开重连'));
+				callWifi([ want ? 'on' : 'off' ]).then(function(r) {
+					if (!r || !r.ok) {
+						draw();
+						setMsg('wifi', mErr(r || { err: '执行失败' }));
+						return;
+					}
+					wf = r;
+					draw();
+					setMsg('wifi', mOk(want ? '已开启' : '已关闭，已还原'));
+				}).catch(function() {
+					// 用户多半正用无线连着面板 —— 换国家码会让无线重连，这次请求可能收不到回包。
+					draw();
+					setMsg('wifi', mInfo('已下发。无线刚重连过，若上面没更新请刷新页面。'));
+				});
+			}
+
+			// ★ 只有一个开关，就不设「保存」了 —— 勾上/取消直接弹确认。
+			//   面板里"总开关"一贯这么做（短信中心那个总开关也是 change 即生效），
+			//   同一个面板里两个总开关不该一个要按保存、一个不用。
+			//   ⚠️ 勾选框已经被浏览器先改了，所以「取消」时必须把它恢复原状。
+			chk.addEventListener('change', function() {
+				var want = chk.checked;
+				function undo() { chk.checked = !want; }
+				if (want) {
+					confirmBox('开启后会断开无线重连', [
+						E('div', {}, '· 2.4G 发射功率会从 ' + offDbm + ' dBm 提到 ' + onDbm + ' dBm（本机硬件上限）'),
+						E('div', { style: 'margin-top:.4em' },
+							'· 无线会断开重连，约 10 秒。如果你正用无线连着这台机器，重连后请刷新本页面。'),
+						E('div', { style: 'margin-top:.4em' }, '· 即使开启，也仍不及原厂固件的无线信号。')
+					], function() { apply(true); }, '确认开启', undo);
+				} else {
+					confirmBox('关闭后会断开无线重连', [
+						E('div', {}, '· 2.4G 发射功率会还原成 ' + offDbm + ' dBm（出厂设置）'),
+						E('div', { style: 'margin-top:.4em' },
+							'· 无线会断开重连，约 10 秒。如果你正用无线连着这台机器，重连后请刷新本页面。')
+					], function() { apply(false); }, '确认关闭', undo);
+				}
+			});
+
+			var body;
+			if (!sup) {
+				body = [ E('div', { 'class': 'cbi-section-descr' }, '这台设备没有可用的 2.4G 无线。') ];
+			} else {
+				body = [
+					E('div', { 'class': 'cbi-section-descr' },
+						'当前发射功率：' + (cur ? cur + ' dBm' : '未知')),
+					E('label', { 'class': 'fzs-opt' }, [
+						chk,
+						E('span', {}, [ E('div', { 'class': 't' },
+							'提高 2.4G 发射功率（' + offDbm + ' → ' + onDbm + ' dBm）') ])
+					]),
+					E('div', { style: 'margin-top:.35em' }, [ statusEl('wifi') ]),
+					// 名称/密码只能去 LuCI 的无线页改（那一页的编辑框是弹窗，没有可直达的地址）。
+					// 形态与「打开 MultiWAN 管理器」一致：灰底导航按钮 —— 面板里跳转就这一种做法，
+					// 不引入新元素（文字链接会跟整体风格打架）。
+					E('div', { 'class': 'fzs-grp' }, [
+						E('a', {
+							'class': 'btn cbi-button',
+							href: L.url('admin/network/wireless')
+						}, '改 WiFi 名称和密码')
+					])
+				];
+			}
+			return section('无线网络', body);
 		}
 
 		draw();

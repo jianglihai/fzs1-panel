@@ -486,9 +486,39 @@ damages arising from the use of this project.
 
 ## Changelog
 
-> Versions track the public version of `luci-app-fzs` (e.g. `0.2.8`).
+> Versions track the public version of `luci-app-fzs` (e.g. `0.2.9`).
 
-### v0.2.8 (2026-10-11, current)
+### v0.2.9 (2026-10-13, current)
+
+**New "Wireless": 2.4G transmit power can be raised to the hardware ceiling · page and wording tidy-up**
+
+**1. 2.4G transmit-power switch (new)**
+
+- A new "Wireless" card on the "Network Settings" page; one switch raises 2.4G transmit power
+  from **20 dBm to 23 dBm** (23 dBm is this board's hardware ceiling, not an arbitrary value);
+- Changing it **drops and re-establishes the wireless link**, so the switch asks for confirmation first;
+  after that it applies automatically, and the card shows the **actual current transmit power**;
+- Afterwards the tool **waits for the radio to come back and verifies the power really changed**;
+  **if it did not, the previous settings are restored automatically** — no "flip a switch, lose the hotspot";
+- The card also links to "Change WiFi name and password" (the router's wireless settings page);
+- Note: the open-source wireless driver obeys Chinese regulations and caps 2.4G at 20 dBm;
+  this switch lifts it to the board's hardware ceiling. **Even enabled, it still falls short of the
+  vendor's stock firmware** (the vendor driver does not honour that power limit).
+
+**2. Page and wording tidy-up**
+
+- The "Internet Settings" page is now "**Network Settings**";
+- The bottom-most "Advanced" card is gone — its MultiWAN note and shortcut **moved directly under the
+  "Internet access mode" section** (the note said "this page", but only that one section uses MultiWAN);
+- The SMS master switch was renamed: "Enable SMS send/receive" → "**Enable SMS features**"
+  (it used to differ from the "SMS forwarding" card by a single character, easy to misread).
+
+**3. Upgrade note**
+
+- Upgrading **does not touch any of your wireless settings**, and does not enable this switch —
+  turn it on yourself when you want it.
+
+### v0.2.8 (2026-10-11)
 
 **Much lower background load · SMS master switch · multi-theme support · assorted UI fixes**
 
