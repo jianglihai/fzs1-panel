@@ -1,6 +1,7 @@
 'use strict';
 'require view';
 'require fs';
+'require fzsexec';
 'require poll';
 'require ui';
 'require uci';
@@ -11,7 +12,11 @@ var FZS_AT = '/usr/libexec/fzs-at';
 // 10 条兼顾"一屏能看几条"与"翻页不过于频繁"。
 var PER_PAGE = 10;
 
+// ★ IMS 通道（2026-10-20 接入）：imsengine 在用户态实现了 IMS（SIP MESSAGE over IP），
+//   短信不经过模组的 AT+CMGS。EC200T 原生 CS 短信有 CMS 304/500 顽疾（固件不含 IMS 栈），
+//   所以把 IMS 放在第一项并设为默认；选「模组1 (EC200T)」时 fzs-at 同样转发到 IMS 通道。
 var MODEMS = [
+	{ v: 'ims', name: 'IMS 通道（推荐 · 走数据通道）' },
 	{ v: '1', name: '模组1 (EC200T)' },
 	{ v: '2', name: '模组2 (EC200N)' }
 ];
@@ -177,7 +182,7 @@ return view.extend({
 								click: function() {
 									ui.hideModal();
 									stInbox.textContent = '删除中…';
-									fs.exec(FZS_AT, [ 'sms', 'drop', m.modem, '' + m.idx ]).then(function(r) {
+									fzsexec.exec(FZS_AT, [ 'sms', 'drop', m.modem, '' + m.idx ]).then(function(r) {
 										var d2 = null;
 										try { d2 = JSON.parse((r && r.stdout) || ''); } catch (e) {}
 										stInbox.textContent = (d2 && d2.ok) ? '✅ 已删除' : ('❌ ' + errMsg(r, d2));
@@ -230,7 +235,7 @@ return view.extend({
 								click: function() {
 									ui.hideModal();
 									stSent.textContent = '删除中…';
-									fs.exec(FZS_AT, [ 'sms', 'dropout', '' + m.ts, m.modem, m.to ]).then(function(r) {
+									fzsexec.exec(FZS_AT, [ 'sms', 'dropout', '' + m.ts, m.modem, m.to ]).then(function(r) {
 										var d2 = null;
 										try { d2 = JSON.parse((r && r.stdout) || ''); } catch (e) {}
 										stSent.textContent = (d2 && d2.ok) ? '✅ 已删除' : ('❌ ' + errMsg(r, d2));
@@ -258,7 +263,7 @@ return view.extend({
 		}
 
 		function loadInbox() {
-			return fs.exec(FZS_AT, [ 'sms', 'inbox' ]).then(function(r) {
+			return fzsexec.exec(FZS_AT, [ 'sms', 'inbox' ]).then(function(r) {
 				var d = null;
 				try { d = JSON.parse((r && r.stdout) || ''); } catch (e) {}
 				if (!d || d.msgs == null) {
@@ -296,10 +301,10 @@ return view.extend({
 		function uci_commit(pairs, done, fail) {
 			var chain = Promise.resolve();
 			pairs.forEach(function(pair) {
-				chain = chain.then(function() { return fs.exec('/sbin/uci', [ '-q', 'set', pair ]); });
+				chain = chain.then(function() { return fzsexec.exec('/sbin/uci', [ '-q', 'set', pair ]); });
 			});
 			return chain
-				.then(function() { return fs.exec('/sbin/uci', [ '-q', 'commit', 'fzs-sms' ]); })
+				.then(function() { return fzsexec.exec('/sbin/uci', [ '-q', 'commit', 'fzs-sms' ]); })
 				.then(done).catch(fail);
 		}
 		// ★ 必须用 DOM property 设置选中态：若写成 E('input',{...,checked:false})，
@@ -332,7 +337,7 @@ return view.extend({
 						click: function() {
 							ui.hideModal();
 							stInbox.textContent = '清空中…';
-							fs.exec(FZS_AT, [ 'sms', 'clear' ]).then(function() {
+							fzsexec.exec(FZS_AT, [ 'sms', 'clear' ]).then(function() {
 								self._pageIn = 1;
 								stInbox.textContent = '✅ 收件箱已清空';
 								return loadInbox();
@@ -356,7 +361,7 @@ return view.extend({
 						click: function() {
 							ui.hideModal();
 							stSent.textContent = '清空中…';
-							fs.exec(FZS_AT, [ 'sms', 'clearout' ]).then(function() {
+							fzsexec.exec(FZS_AT, [ 'sms', 'clearout' ]).then(function() {
 								self._pageSent = 1;
 								stSent.textContent = '✅ 已发送留底已清空';
 								return loadInbox();
@@ -370,6 +375,8 @@ return view.extend({
 		// ---- 发送 ----
 		var sel = E('select', { 'class': 'cbi-input-select', style: 'box-sizing:border-box;width:16em;max-width:100%' },
 			MODEMS.map(function(t) { return E('option', { value: t.v }, t.name); }));
+		// [ims-bridge] 默认选中 IMS 通道，避免误选原生模组撞 CMS 304/500
+		sel.value = 'ims';
 		var num = E('input', {
 			'class': 'cbi-input-text', type: 'text', maxlength: 20,
 			placeholder: '例如 13800138000 或 +8613800138000',
@@ -411,13 +418,19 @@ return view.extend({
 					E('button', {
 						'class': 'btn cbi-button-action',
 						click: function() {
+							// [ims-bridge] 目标 ims 与 1(EC200T) 都由 fzs-at 转发到 IMS 通道
+							var viaIMS = (sel.value === 'ims' || sel.value === '1');
 							ui.hideModal();
-							status.textContent = '发送中…（模组应答约需 5~10 秒）';
-							fs.exec(FZS_AT, [ 'sms', 'send', sel.value, to, body ]).then(function(r) {
+							status.textContent = viaIMS
+								? '发送中…（经 IMS 通道发出，等待网络回执约 5~20 秒）'
+								: '发送中…（模组应答约需 5~10 秒）';
+							fzsexec.exec(FZS_AT, [ 'sms', 'send', sel.value, to, body ]).then(function(r) {
 								var d = null;
 								try { d = JSON.parse((r && r.stdout) || ''); } catch (e) {}
 								if (d && d.ok) {
-									status.textContent = '✅ 已交给模组发送（+CMGS 确认）';
+									status.textContent = viaIMS
+										? '✅ 已通过 IMS 通道发出（SIP MESSAGE 已交网络）'
+										: '✅ 已交给模组发送（+CMGS 确认）';
 									txt.value = '';
 									counter.textContent = '';
 								} else {
@@ -531,7 +544,7 @@ return view.extend({
 			}
 		}
 		// 异步探测（不改动页面结构，回来只更新提示显隐）
-		fs.exec(FZS_AT, [ 'sms', 'caps' ]).then(function(r) {
+		fzsexec.exec(FZS_AT, [ 'sms', 'caps' ]).then(function(r) {
 			try { var d = JSON.parse((r && r.stdout) || ''); capJson = (d && d.json === 1); }
 			catch (e) { capJson = true; }     // 探测失败就当有（不误报）
 			refreshJsonTip();
@@ -657,7 +670,7 @@ return view.extend({
 		var btnFwdTest = E('button', { 'class': 'cbi-button' }, '发送测试');
 		btnFwdTest.addEventListener('click', function() {
 			stFwd.textContent = '发送测试中…（请确认已先保存设置）';
-			fs.exec(FZS_AT, [ 'sms', 'fwdtest' ]).then(function(r) {
+			fzsexec.exec(FZS_AT, [ 'sms', 'fwdtest' ]).then(function(r) {
 				var d = null;
 				try { d = JSON.parse((r && r.stdout) || ''); } catch (e) {}
 				stFwd.textContent = (d && d.ok) ? '✅ 测试消息已发出，请看手机' : ('❌ ' + errMsg(r, d));
@@ -724,7 +737,7 @@ return view.extend({
 			uci_commit([ 'fzs-sms.globals.enabled=' + (on ? '1' : '0') ], function() {
 				// ★ 立刻生效：开 → start（把守护拉起来）；关 → stop（停掉守护）。
 				//   关掉时如果守护本来就在跑，不 stop 就要等重启设备才真正停。
-				return fs.exec('/etc/init.d/fzs-sms', [ on ? 'start' : 'stop' ]).then(function() {
+				return fzsexec.exec('/etc/init.d/fzs-sms', [ on ? 'start' : 'stop' ]).then(function() {
 					stMain.textContent = on ? '✅ 短信中心已开启' : '✅ 短信中心已关闭（不再收发短信）';
 				}).catch(function() {
 					// 服务控制失败不算保存失败：配置已落盘，重启设备后同样生效。
@@ -748,6 +761,97 @@ return view.extend({
 			])
 		]);
 
+		// [ims-bridge-card] v5 — imsengine 补丁标记，勿删（patch-fzs 靠它判断幂等/代次）
+		// ---- IMS 通道卡片（2026-10-20 新增）----
+		//   背景：本机两块模组里，EC200T（模组1）固件**不含 IMS/VoLTE 栈**，
+		//   原生 AT+CMGS 只能走 CS 域 —— 这就是面板发短信报「CMS 错误 500」的根因，
+		//   且它自己**读不出 P-CSCF 地址**。EC200N（模组2）固件带原生 IMS，能读到。
+		//   所以流程是：把这张卡换插到模组2 → 点「学习 P-CSCF」→ 引擎用原生 IMS 注册
+		//   成功后读出 P-CSCF，按 IMSI/ICCID 精确存盘 → 卡插回模组1，之后 EC200T
+		//   直接用学到的地址注册（一次命中，不再逐个试 6 个候选）。
+		var stIms = E('span', { 'class': 'fzs-status' }, '读取中…');
+		var btnImsRefresh = E('button', { 'class': 'fzs-hbtn' }, '刷新状态');
+		var btnImsLearn = E('button', { 'class': 'cbi-button' }, '学习 P-CSCF');
+
+		// 秒 → “3 分 20 秒” 这类人话
+		function durSec(n) {
+			n = parseInt(n, 10);
+			if (isNaN(n) || n < 0) return null;
+			if (n < 60) return n + ' 秒';
+			if (n < 3600) return Math.floor(n / 60) + ' 分';
+			return Math.floor(n / 3600) + ' 小时 ' + Math.floor((n % 3600) / 60) + ' 分';
+		}
+
+		function imsStatus() {
+			stIms.textContent = '读取中…';
+			return fzsexec.exec(FZS_AT, [ 'ims', 'status' ]).then(function(r) {
+				var d = null;
+				try { d = JSON.parse((r && r.stdout) || ''); } catch (e) {}
+				if (!d) { stIms.textContent = '❌ ' + errMsg(r, null); return; }
+				// ★ 没装 imsengine 时把「IMS 通道」这个下拉项去掉，避免用户选了却发不出。
+				//   （fzs-at 侧也有同样保险：/etc/init.d/ims 不存在会回退原生 CS 域）
+				if (d.state === '未安装') {
+					for (var i = sel.options.length - 1; i >= 0; i--) {
+						if (sel.options[i].value === 'ims') sel.remove(i);
+					}
+					if (sel.value === 'ims') sel.value = '1';
+				}
+				var t = d.state || '未知';
+				if (d.detail) t += ' · ' + d.detail;
+				if (d.imsi) t += '（IMSI ' + d.imsi + '）';
+				// 租期信息：让人一眼看出"注册稳不稳"，不用去翻日志
+				var up = durSec(d.up_sec);
+				if (up) t += ' · 已在线 ' + up;
+				if (d.next_renew) t += ' · 下次续租 ' + d.next_renew;
+				var rx = parseInt(d.net_rx_ago, 10);
+				if (!isNaN(rx) && rx >= 0) {
+					t += ' · 网络侧最后一次响应 ' + (rx < 5 ? '刚刚' : durSec(rx) + '前');
+				}
+				// ★ 2026-10-21 [ims-bypass]: 旁路也算健康
+				//   模组自带 IMS 栈已注册时，引擎不自建承载，状态为"原生 IMS 已注册（旁路）"，
+				//   这是正常不是异常，不该显示 ⚠️。
+				var okIms = (d.state === '已注册' || (d.state || '').indexOf('旁路') >= 0);
+				stIms.textContent = (okIms ? '✅ ' : '⚠️ ') + t;
+			}).catch(function(e) { stIms.textContent = '❌ ' + e; });
+		}
+
+		btnImsRefresh.addEventListener('click', function() { imsStatus(); });
+
+		btnImsLearn.addEventListener('click', function() {
+			btnImsLearn.disabled = true;
+			stIms.textContent = '学习中…（自动找 EC200N 口 → 开原生 IMS → 读 P-CSCF，最长约 90 秒，请勿断电）';
+			fzsexec.exec(FZS_AT, [ 'ims', 'learn' ]).then(function(r) {
+				var d = null;
+				try { d = JSON.parse((r && r.stdout) || ''); } catch (e) {}
+				btnImsLearn.disabled = false;
+				if (d && d.ok) {
+					var a = (d.pcscf && d.pcscf.length) ? d.pcscf.join(' / ') : '(未读到)';
+					stIms.textContent = '✅ 已学到 P-CSCF：' + a + ' —— 卡可以插回模组1(EC200T) 了';
+				} else {
+					stIms.textContent = '❌ ' + ((d && d.err) ? d.err : errMsg(r, d));
+				}
+				imsStatus();
+			}).catch(function(e) {
+				btnImsLearn.disabled = false;
+				stIms.textContent = '❌ ' + e;
+				imsStatus();
+			});
+		});
+
+		var imsCard = E('div', { 'class': 'cbi-section fzs-card', style: 'margin-top:1em' }, [
+			E('h3', { 'class': 'fzs-card-h' }, [ E('span', {}, 'IMS 通道'), stIms, btnImsRefresh ]),
+			E('div', { 'class': 'cbi-section-node fzs-body' }, [
+				E('div', { 'class': 'fzs-actions' }, [ btnImsLearn ]),
+				E('div', { 'class': 'fzs-tip' },
+					'短信默认走 IMS 通道（数据通道），不再用模组的 CS 域短信，EC200T 的 CMS 500 报错由此根治。' +
+					'「学习 P-CSCF」只在换卡/换运营商后需要做一次：把卡插到模组2(EC200N，固件带原生 IMS) 上点一次，' +
+					'学到地址后把卡插回模组1(EC200T) 即可长期复用；同一张卡下次插回来不用再学。')
+			])
+		]);
+
+		imsStatus();
+
+		// [/ims-bridge-card] 结束标记 —— patch-fzs 靠这对标记定位旧片段边界以便升级，勿删
 		function reload() {
 			stamp.textContent = '读取中…';
 			return loadInbox().then(function() {
@@ -758,7 +862,7 @@ return view.extend({
 		reload();
 		poll.add(reload, 10);
 
-		return E('div', {}, [ E('style', {}, CSS), mainCard, head, inboxCard, sentCard, optCard, fwdCard, composeCard ]);
+		return E('div', {}, [ E('style', {}, CSS), mainCard, imsCard, head, inboxCard, sentCard, optCard, fwdCard, composeCard ]);
 	},
 
 	// ★★ 关键：必须在 render 之前把配置读进来。

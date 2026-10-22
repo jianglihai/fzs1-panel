@@ -1,6 +1,7 @@
 'use strict';
 'require view';
 'require fs';
+'require fzsexec';
 'require ui';
 
 var FZS_AT = '/usr/libexec/fzs-at';
@@ -46,7 +47,7 @@ var CSS = [
 ].join('\n');
 
 function call(args) {
-	return fs.exec(FZS_AT, args).then(function(r) {
+	return fzsexec.exec(FZS_AT, args).then(function(r) {
 		var out = (r && r.stdout) || '';
 		var err = ((r && r.stderr) || '').trim().split('\n').pop().replace(/^fzs-at:\s*/, '');
 		var d = null;

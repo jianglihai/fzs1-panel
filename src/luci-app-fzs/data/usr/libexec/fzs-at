@@ -697,11 +697,64 @@ cmd_sms_drop() {   # $1=目标 $2=索引 → 从收件箱记录移除；并尽�
 	[ -n "$_p" ] && at_query "$_p" "AT+CMGD=$2" >/dev/null 2>&1
 }
 
+# native_ims_target [ims-bypass] 2026-10-21
+#   回显第一个"有卡 且 模组原生 IMS 栈已注册"的 target(1|2); 都不满足则空。
+#   用途: EC200N 等固件自带 IMS 的模组, 短信走原生 AT+CMGS 即走 IMS 域, 无需 imsengine;
+#         而 EC200T(AT+QCFG="ims" → +CME ERROR: 4)没有 IMS 栈, 才必须走引擎。
+#   判据: AT+CPIN? → READY  且  AT+CIREG? → <n>,1
+native_ims_target() {
+	local _t _p _st
+	for _t in 1 2; do
+		_p=$(target_to_port "$_t") 2>/dev/null
+		[ -n "$_p" ] || continue
+		at_query "$_p" 'AT+CPIN?' 2>/dev/null | grep -q 'READY' || continue
+		# 注意: .*$ 必须带, 否则 +CIREG: 1,1,15 会残留成 "1,15" 而匹配不上
+		_st=$(at_query "$_p" 'AT+CIREG?' 2>/dev/null | tr -d '\r' \
+			| sed -n 's/^+CIREG: *[0-9]*,\([0-9]*\).*$/\1/p' | head -1)
+		[ "$_st" = "1" ] && { echo "$_t"; return 0; }
+	done
+	return 1
+}
+
+# cmd_ims_native [ims-bypass]: 输出 "<target> <at口绝对路径>"; 无原生 IMS 则退出 1
+cmd_ims_native() {
+	local _t _p
+	_t=$(native_ims_target) || return 1
+	_p=$(target_to_port "$_t") || return 1
+	echo "$_t /dev/$_p"
+}
+
 cmd_sms_send() {   # $1=目标 $2=号码 $3=内容
-	_tgt="$1"; _num="$2"; _txt="$3"
+	# ── IMS 通道 [ims-bridge] v3（imsengine，2026-10-20 接入）─────────────
+	#   EC200T 的模组固件**不含 IMS/VoLTE 协议栈**（AT+QCFG="ims" → +CME ERROR: 4），
+	#   它的原生短信只能走 CS 域：收信慢甚至收不到，发信还会撞 CMS 304/500
+	#   （下面 die "被模组拒绝（CMS 错误 …）" 就是这条路径）。
+	#   自研 imsengine 在用户态实现了 IMS（SIP MESSAGE over IP，走 cid3 数据通道），
+	#   所以把面板发送统一改走 IMS：
+	#     目标 ims / 1(EC200T) → /etc/init.d/ims submit（用 200T 那张卡的 IMS 注册）
+	#     目标 2(EC200N)       → 保留原生 AT+CMGS（EC200N 固件自带 IMS 栈，原生短信本来就正常）
+	# ★ 2026-10-21 [ims-bypass]: 自带 IMS 栈的模组旁路引擎
+	_tgt="$1"
+	case "$1" in
+		ims|1)
+			_nt=$(native_ims_target 2>/dev/null)
+			if [ -n "$_nt" ]; then
+				# 该模组固件自带 IMS 且已注册 → 直接用它的原生通道（模组内部即走 IMS 域）
+				_tgt="$_nt"
+			elif [ -x /etc/init.d/ims ]; then
+				# 引擎发成功就返回；失败（如未注册）则降级原生，不至于彻底发不出
+				if /etc/init.d/ims submit "$2" "$3"; then
+					printf '{"ok":true,"chunks":1}\n'
+					exit 0
+				fi
+				_tgt="1"
+			fi
+			;;
+	esac
+	_num="$2"; _txt="$3"
 	case "$_num" in ''|*[!0-9+]*) die "号码只能含数字和 +" ;; esac
 	[ -n "$_txt" ] || die "内容不能为空"
-	_p=$(target_to_port "$1") || die "找不到 AT 口"
+	_p=$(target_to_port "$_tgt") || die "找不到 AT 口"
 	# ★ 纯 PDU 模式发送（2026-10-07 晚 定案，取代此前的“文本模式 + 填充补偿”）：
 	#   真因纠正：以前 PDU 报 CMS 304 / 文本带前缀，根因不在模组而在传输层——
 	#   picocom 带了 --noinit，端口没被设成 raw、ECHO 一直开着，
@@ -758,7 +811,49 @@ cmd_sms_csca() {   # $1=目标 → 输出短信中心号码（如 +8613800757500
 	UC_SUB=cscadec UC_ARG1="$_s" ucode /usr/libexec/fzs-sms.uc 2>/dev/null || printf '%s\n' "$_s"
 }
 
-[ $# -ge 1 ] || die "用法: $ME {info|imei|ports|apn|data|fun|sms} ..."
+# ── IMS 引擎对接（2026-10-20）──────────────────────────────────────────────
+# cmd_ims_learn: P-CSCF 自学习。卡必须已插在模组2(EC200N) 上。
+#   引擎 imsengine learn 会：开 200N 的原生 IMS → 读 AT+CGCONTRDP 的
+#   P_CSCF_prim/sec → 按「同卡精确 + 运营商前缀兜底」写 /etc/pcscf_learned.json。
+#   输出透传（本身是 JSON）；非 JSON 的异常输出包装成 {"ok":false,...}。
+cmd_ims_learn() {   # $1=学习源 AT 口（可选, 省略自动探测）
+	if [ ! -x /etc/init.d/ims ]; then
+		printf '{"ok":false,"err":"未安装 imsengine 插件（/etc/init.d/ims 不存在）"}\n'
+		return 1
+	fi
+	_r=$(/etc/init.d/ims learn "$1" 2>&1)
+	_rc=$?
+	case "$_r" in
+	\{*\})
+		printf '%s\n' "$_r"
+		;;
+	*)
+		_e=$(printf '%s' "$_r" | tr '\r\n' '  ' | sed 's/\\/\\\\/g; s/"/\\"/g')
+		[ -n "$_e" ] || _e="学习失败（无输出, rc=$_rc）"
+		printf '{"ok":false,"err":"%s"}\n' "$_e"
+		;;
+	esac
+	return $_rc
+}
+
+# cmd_ims_status: 引擎当前状态（面板展示用）
+cmd_ims_status() {
+	_st="未安装"; _det=""; _imsi=""
+	_up=""; _rx=""; _next=""
+	if [ -r /tmp/ims_status.txt ]; then
+		. /tmp/ims_status.txt 2>/dev/null
+		_st="${STATE:-未知}"; _det="${DETAIL:-}"; _imsi="${T_IMSI:-}"
+		# 0.1.6 起引擎额外写入注册租期信息（回答"注册会不会过期"）
+		_up="${UP_SEC:-}"; _rx="${NET_RX_AGO:-}"; _next="${NEXT_RENEW:-}"
+	elif [ -x /etc/init.d/ims ]; then
+		_st="未启动"
+	fi
+	_e=$(printf '%s' "$_det" | tr '\r\n' '  ' | sed 's/\\/\\\\/g; s/"/\\"/g')
+	printf '{"state":"%s","detail":"%s","imsi":"%s","up_sec":"%s","net_rx_ago":"%s","next_renew":"%s"}\n' \
+		"$_st" "$_e" "$_imsi" "$_up" "$_rx" "$_next"
+}
+
+[ $# -ge 1 ] || die "用法: $ME {info|imei|ports|apn|data|fun|sms|ims} ..."
 
 CMD="$1"; shift
 case "$CMD" in
@@ -845,6 +940,23 @@ sms)
 	send) [ $# -ge 3 ] || die "用法: $ME sms send <目标> <号码> <内容>"; cmd_sms_send "$1" "$2" "$3" ;;
 	inbox) cmd_sms_inbox ;;
 	csca) [ $# -ge 1 ] || die "用法: $ME sms csca <目标>"; cmd_sms_csca "$1" ;;
+	*) die "未知子命令: $_sub" ;;
+	esac
+	;;
+ims)
+	# ── IMS 引擎（imsengine）对接 [ims-bridge] 2026-10-20 ──────────────────
+	#   200T(EC200T) 固件不会向网络要 P-CSCF，也没有 AT 能读；
+	#   200N(EC200N) 固件自带 IMS。故提供 learn：把卡临时插到 200N，
+	#   借它的原生 IMS 把 P-CSCF 读出来存盘，卡插回 200T 即刻可用。
+	[ $# -ge 1 ] || die "用法: $ME ims {learn|status} ..."
+	_sub="$1"; shift
+	case "$_sub" in
+	# $1 = 可选的学习源 AT 口（省略则自动找 200N 的口）
+	learn) cmd_ims_learn "$1" ;;
+	# 引擎状态：给面板显示"IMS 是否已注册 / 当前 P-CSCF"
+	status) cmd_ims_status ;;
+	# [ims-bypass] 探测"固件自带 IMS 栈且已注册"的模组: 输出 "<target> <at口>"
+	native) cmd_ims_native ;;
 	*) die "未知子命令: $_sub" ;;
 	esac
 	;;

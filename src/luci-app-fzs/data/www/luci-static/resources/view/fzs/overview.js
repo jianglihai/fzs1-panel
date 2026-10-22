@@ -1,6 +1,7 @@
 'use strict';
 'require view';
 'require fs';
+'require fzsexec';
 'require poll';
 'require ui';
 
@@ -71,7 +72,7 @@ var CSS = [
 ].join('\n');
 
 function fetchAll() {
-	return fs.exec(FZS_AT, [ 'info' ]).then(function(r) {
+	return fzsexec.exec(FZS_AT, [ 'info' ]).then(function(r) {
 		try {
 			var a = JSON.parse((r && r.stdout) || '[]');
 			return [ a[0] || null, a[1] || null ];

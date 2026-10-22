@@ -20,8 +20,18 @@ DIST = os.path.join(HERE, "dist")
 BUILD_TS = int(time.time())
 
 def read_ctl(name):
+    """读 control/ 下的控制文件。
+
+    ★ 必须统一成 LF：仓库在 Windows 上 checkout 后这些文件常带 CRLF，
+      打包时若原样塞进 ipk，设备上执行 postinst 会直接语法错
+      （实测：ash 报 `line 3: { : not found`，因为 `{` 变成了 `{\\r`），
+      后果是服务没被 enable/restart、LuCI 缓存没清 —— 装完看着成功实则没生效。
+      control 里的 CRLF 同样危险：字段值会带上 \\r，可能影响 opkg 的版本比较。
+    """
     p = os.path.join(PKG, "control", name)
-    return open(p, "rb").read() if os.path.exists(p) else None
+    if not os.path.exists(p):
+        return None
+    return open(p, "rb").read().replace(b"\r\n", b"\n")
 
 def get_version():
     ctl = read_ctl("control").decode("utf-8")

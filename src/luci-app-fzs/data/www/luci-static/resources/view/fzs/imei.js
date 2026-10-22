@@ -1,6 +1,7 @@
 'use strict';
 'require view';
 'require fs';
+'require fzsexec';
 'require ui';
 'require fzs.hist as hist';
 
@@ -49,7 +50,7 @@ function luhnComplete(s14) {
 }
 
 function readImeis() {
-	return fs.exec(FZS_AT, [ 'imei', 'read' ]).then(function(r) {
+	return fzsexec.exec(FZS_AT, [ 'imei', 'read' ]).then(function(r) {
 		try { return JSON.parse((r && r.stdout) || '[]'); } catch (e) { return []; }
 	}).catch(function() { return []; });
 }
@@ -139,7 +140,7 @@ return view.extend({
 						click: function() {
 							ui.hideModal();
 							status.textContent = '写入中…（模组会重启，约 25 秒，请勿断电）';
-							fs.exec(FZS_AT, [ 'imei', 'write', v, sel.value, '--yes' ]).then(function(r) {
+							fzsexec.exec(FZS_AT, [ 'imei', 'write', v, sel.value, '--yes' ]).then(function(r) {
 								var d = null;
 								try { d = JSON.parse((r && r.stdout) || ''); } catch (e) {}
 								if (d && d.ok) {

@@ -13,3 +13,5 @@ Description:  蜂助手面板 —— MIBOX-668M2 蜂窝运维 LuCI 应用。
  双模组状态面板 / 锁频段(AT*BAND) / 锁频点·锁小区(AT*CELL) /
  短信中心(收件箱+转发) / IMEI / APN 与数据开关 / 运维工具。
  自包含 AT 引擎，不依赖 mifi-at 内部实现。
+ ★ 本版本内置 IMS 短信通道支持（配合 imsengine 插件，解决 EC200T 发信 CMS 500）：
+   短信页新增「IMS 通道」卡片与「学习 P-CSCF」按钮；未装 imsengine 时自动回退原生 CS 域。

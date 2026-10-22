@@ -1,6 +1,7 @@
 'use strict';
 'require view';
 'require fs';
+'require fzsexec';
 'require ui';
 
 /*
@@ -119,7 +120,7 @@ var CSS = [
 ].join('\n');
 
 function call(args) {
-	return fs.exec(FZS_NET, args).then(function(r) {
+	return fzsexec.exec(FZS_NET, args).then(function(r) {
 		var d = null;
 		try { d = JSON.parse((r && r.stdout) || ''); } catch (e) {}
 		if (!d || !d.ok) return { ok: false, err: (d && d.err) || '执行失败' };
@@ -130,7 +131,7 @@ function call(args) {
 // 无线功率：调 /usr/libexec/fzs-wifi（改国家码+功率都在后端做，含"等稳定验证、失败自动还原"）。
 // 与 call() 的区别：这里把后端返回的**原样**交出去（ok:false 时也带 err 供页面显示）。
 function callWifi(args) {
-	return fs.exec(FZS_WIFI, args).then(function(r) {
+	return fzsexec.exec(FZS_WIFI, args).then(function(r) {
 		var d = null;
 		try { d = JSON.parse((r && r.stdout) || ''); } catch (e) {}
 		return d || { ok: false, err: '执行失败' };
@@ -138,8 +139,8 @@ function callWifi(args) {
 }
 
 function uciSet(k, v) {
-	return fs.exec(UCI, [ '-q', 'set', k + '=' + v ]).then(function() {
-		return fs.exec(UCI, [ '-q', 'commit', 'mifi' ]);
+	return fzsexec.exec(UCI, [ '-q', 'set', k + '=' + v ]).then(function() {
+		return fzsexec.exec(UCI, [ '-q', 'commit', 'mifi' ]);
 	});
 }
 

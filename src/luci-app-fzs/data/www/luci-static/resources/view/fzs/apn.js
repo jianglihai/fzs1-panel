@@ -1,6 +1,7 @@
 'use strict';
 'require view';
 'require fs';
+'require fzsexec';
 'require ui';
 'require fzs.hist as hist';
 
@@ -40,7 +41,7 @@ var CSS = [
 ].join('\n');
 
 function fetchAll() {
-	return fs.exec(FZS_AT, [ 'apn', 'read' ]).then(function(r) {
+	return fzsexec.exec(FZS_AT, [ 'apn', 'read' ]).then(function(r) {
 		try {
 			var a = JSON.parse((r && r.stdout) || '[]');
 			return [ a[0] || null, a[1] || null ];
@@ -129,7 +130,7 @@ return view.extend({
 							click: function() {
 								ui.hideModal();
 								status.textContent = '应用中…（请勿关闭页面）';
-								fs.exec(FZS_AT, [ 'apn', 'write', m.cfg, apn ]).then(function(r) {
+								fzsexec.exec(FZS_AT, [ 'apn', 'write', m.cfg, apn ]).then(function(r) {
 									var d = null;
 									try { d = JSON.parse((r && r.stdout) || ''); } catch (e) {}
 									if (d && d.ok && d.net === 'ok') status.textContent = '✅ 已用 ' + apn + ' 激活并拿到 IP';
@@ -161,7 +162,7 @@ return view.extend({
 								click: function() {
 									ui.hideModal();
 									status.textContent = '停用中…';
-									fs.exec(FZS_AT, [ 'data', 'off', m.cfg ]).then(function() {
+									fzsexec.exec(FZS_AT, [ 'data', 'off', m.cfg ]).then(function() {
 										status.textContent = '✅ 已停用';
 										return refresh();
 									}).catch(function(e) { status.textContent = failMsg(e); return refresh(); });
@@ -171,7 +172,7 @@ return view.extend({
 					]);
 				} else {
 					status.textContent = '启用中…（重新参与分流约需 40 秒）';
-					fs.exec(FZS_AT, [ 'data', 'on', m.cfg ]).then(function(r) {
+					fzsexec.exec(FZS_AT, [ 'data', 'on', m.cfg ]).then(function(r) {
 						var d = null;
 						try { d = JSON.parse((r && r.stdout) || ''); } catch (e) {}
 						if (d && d.ok && d.net === 'ok') status.textContent = '✅ 数据已启用';
@@ -187,7 +188,7 @@ return view.extend({
 				if (!m.cfg) { status.textContent = '还没读到模组状态，先点「立即刷新」'; return; }
 				if (m.cfun === '0') {
 					status.textContent = '恢复中…（重新驻网约 20~40 秒）';
-					fs.exec(FZS_AT, [ 'fun', 'on', m.cfg ]).then(function(r) {
+					fzsexec.exec(FZS_AT, [ 'fun', 'on', m.cfg ]).then(function(r) {
 						var d = null;
 						try { d = JSON.parse((r && r.stdout) || ''); } catch (e) {}
 						if (d && d.ok && d.net === 'ok') status.textContent = '✅ 已退出飞行模式，数据已启用';
@@ -205,7 +206,7 @@ return view.extend({
 								click: function() {
 									ui.hideModal();
 									status.textContent = '开启中…';
-									fs.exec(FZS_AT, [ 'fun', 'off', m.cfg ]).then(function(r) {
+									fzsexec.exec(FZS_AT, [ 'fun', 'off', m.cfg ]).then(function(r) {
 										var d = null;
 										try { d = JSON.parse((r && r.stdout) || ''); } catch (e) {}
 										status.textContent = (d && d.ok) ? '✅ 已开启飞行模式' : ('❌ ' + errMsg(r, d));
