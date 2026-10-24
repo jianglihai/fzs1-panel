@@ -1,9 +1,12 @@
 # FZS Panel · luci-app-fzs
 
-> 📌 **Derivative copy.** Every part of this panel — UI, AT logic, SMS/PDU handling, IMEI and
-> band/cell lock — is the original work of [@zzt718](https://github.com/zzt718) at
+> 📌 **Derivative copy.** Every part of the **panel** (`src/luci-app-fzs`) — UI, AT logic,
+> SMS/PDU handling, IMEI and band/cell lock — is the original work of
+> [@zzt718](https://github.com/zzt718) at
 > [zzt718/fzs1-panel](https://github.com/zzt718/fzs1-panel) (GPL-3.0). This copy carries only a few
 > small fixes listed at [Origin & Credits](#origin--credits). **Please star his repository.**
+> The **IMS engine** in `engine/` is *not* part of upstream: it is this repository's own Go
+> implementation plus board scripts.
 
 > **A Chinese-language cellular maintenance panel for the "FengZhuShou S1" (MIBOX-668M2), running on community OpenWrt firmware.**
 > Dual-modem status · Band lock · EARFCN/PCI lock · IMEI change · APN & data switches · Dual-modem SMS with auto-forwarding.
@@ -47,8 +50,8 @@ command line can:
 - Send and receive SMS, and auto-forward messages to a phone app or group bot;
 - Read/change the IMEI, set the APN, toggle 4G data.
 
-> The firmware itself is built by a community developer (see [Acknowledgements](#acknowledgements));
-> this project only delivers the panel (the .ipk).
+> The firmware itself is built by a community developer (not provided here);
+> this project only delivers the plugin packages (.ipk).
 
 ---
 
@@ -481,8 +484,9 @@ damages arising from the use of this project.
 ## Origin & Credits
 
 This repository is a **copy** of [zzt718/fzs1-panel](https://github.com/zzt718/fzs1-panel).
-All original design and implementation is the work of its author
-[@zzt718](https://github.com/zzt718); this copy contains none.
+All original design and implementation of the **panel** is the work of its author
+[@zzt718](https://github.com/zzt718); this copy contains none of it. The **IMS engine**
+under `engine/` is not part of upstream — it is maintained here independently.
 
 | Item | Original repository | License |
 | --- | --- | --- |
@@ -532,15 +536,10 @@ the engine hides the "IMS channel" option by design. See [engine/README.md](engi
 
 ## Acknowledgements
 
-- **[@zzt718](https://github.com/zzt718) — the original author of this panel.** All source, UI
-  design and AT/PDU knowledge are his work; this repository is a copy of
-  [zzt718/fzs1-panel](https://github.com/zzt718/fzs1-panel). See [Origin & Credits](#origin--credits).
-- **羁穗** (JiSui, CoolApk) — builder of the community OpenWrt firmware for this device
-- The **OpenWrt / LuCI** communities — the platform it runs on
-- Sister project **[fzs1-decloud](https://github.com/zzt718/fzs1-decloud)** — vendor-firmware
-  de-clouding and cellular toolbox; this project's accumulated knowledge (band lock / IMEI /
-  SMS / AT) came from there
-- Everyone who tested and gave feedback
+- **[@zzt718](https://github.com/zzt718) — the original author of this panel.** All panel source,
+  UI design and AT/PDU knowledge are his work; this repository is a copy of
+  [zzt718/fzs1-panel](https://github.com/zzt718/fzs1-panel).
+  See [Origin & Credits](#origin--credits).
 
 ---
 
