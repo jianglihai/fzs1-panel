@@ -1,5 +1,10 @@
 # FZS Panel · luci-app-fzs
 
+> 📌 **Derivative copy.** Every part of this panel — UI, AT logic, SMS/PDU handling, IMEI and
+> band/cell lock — is the original work of [@zzt718](https://github.com/zzt718) at
+> [zzt718/fzs1-panel](https://github.com/zzt718/fzs1-panel) (GPL-3.0). This copy carries only a few
+> small fixes listed at [Origin & Credits](#origin--credits). **Please star his repository.**
+
 > **A Chinese-language cellular maintenance panel for the "FengZhuShou S1" (MIBOX-668M2), running on community OpenWrt firmware.**
 > Dual-modem status · Band lock · EARFCN/PCI lock · IMEI change · APN & data switches · Dual-modem SMS with auto-forwarding.
 > Ships as a **single .ipk** — upload it in the browser to install, **no re-flashing required**.
@@ -473,8 +478,38 @@ damages arising from the use of this project.
 
 ---
 
+## Origin & Credits
+
+This repository is a **copy** of [zzt718/fzs1-panel](https://github.com/zzt718/fzs1-panel).
+All original design and implementation is the work of its author
+[@zzt718](https://github.com/zzt718); this copy contains none.
+
+| Item | Original repository | License |
+| --- | --- | --- |
+| **Panel source `luci-app-fzs`** (source of this copy) | [**zzt718/fzs1-panel**](https://github.com/zzt718/fzs1-panel) | GPL-3.0 |
+| Knowledge source: AT / band lock / IMEI / SMS / PDU | [zzt718/fzs1-decloud](https://github.com/zzt718/fzs1-decloud) | GPL-3.0 |
+| Companion firmware & board adaptation | [zzt718/fzs1-openwrt](https://github.com/zzt718/fzs1-openwrt) | GPL-3.0 |
+
+> 🙏 **Heartfelt thanks to [@zzt718](https://github.com/zzt718)** for the hard work behind this panel.
+> **Please keep your stars for the original repository** — this one exists only to carry a few
+> personal fixes alongside `jianglihai/fzs1-openwrt-ims`.
+
+What this copy adds on top of his work (everything else is untouched original):
+
+| Version | Change |
+| --- | --- |
+| `0.3.2-1` | Fixed **all panel AT interaction failing** on OpenWrt 23.05: rpcd `file.c:812` has `if (sid && env) return PERMISSION_DENIED` checked *before* any ACL, while LuCI's `fs.exec()` always sends an `env` key. Replaced with a `fzsexec` module declaring only `['command','params']` — 28 call sites across 7 views |
+| `0.3.2-1` | `build_ipk.py`: normalise CRLF→LF before packing `control`/`postinst` (otherwise ash reports `line 3: { : not found` and services never start) |
+| current | Keeps the IMS native-stack bypass in `fzs-at`: `native_ims_target` / `cmd_ims_native` / `cmd_ims_learn` (P-CSCF auto-learning), falling back to native CS domain when `imsengine` is absent |
+
+> For development of the panel itself, go to
+> [zzt718/fzs1-panel](https://github.com/zzt718/fzs1-panel) — that is its real home.
+
 ## Acknowledgements
 
+- **[@zzt718](https://github.com/zzt718) — the original author of this panel.** All source, UI
+  design and AT/PDU knowledge are his work; this repository is a copy of
+  [zzt718/fzs1-panel](https://github.com/zzt718/fzs1-panel). See [Origin & Credits](#origin--credits).
 - **羁穗** (JiSui, CoolApk) — builder of the community OpenWrt firmware for this device
 - The **OpenWrt / LuCI** communities — the platform it runs on
 - Sister project **[fzs1-decloud](https://github.com/zzt718/fzs1-decloud)** — vendor-firmware

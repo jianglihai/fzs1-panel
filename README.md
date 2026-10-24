@@ -1,5 +1,39 @@
 # 蜂助手面板 · luci-app-fzs
 
+---
+
+## 原作出处与鸣谢（**本仓库是自 upstream 复制的衍生副本**）
+
+本仓库的全部内容 —— 面板 UI、全部 AT 交互逻辑、短信/PDU/转发实现、IMEI 与锁频/锁小区功能 ——
+**均为原作者 [@zzt718](https://github.com/zzt718) 在
+[zzt718/fzs1-panel](https://github.com/zzt718/fzs1-panel) 中的原创作品**。
+本仓库只是把它复制过来，在需要的地方做少量缺陷修复，**未经手任何原创设计**。
+
+| 项 | 原作者仓库 | 许可 |
+| --- | --- | --- |
+| **面板源码 `luci-app-fzs`（本仓库的源头）** | [**zzt718/fzs1-panel**](https://github.com/zzt718/fzs1-panel) | GPL-3.0 |
+| 知识来源：AT / 锁频 / IMEI / 短信 / PDU 经验 | [zzt718/fzs1-decloud](https://github.com/zzt718/fzs1-decloud) | GPL-3.0 |
+| 配套固件与板级适配 | [zzt718/fzs1-openwrt](https://github.com/zzt718/fzs1-openwrt) | GPL-3.0 |
+
+> 🙏 **衷心感谢 [@zzt718](https://github.com/zzt718) 的辛苦付出与开源精神。**
+> 蜂助手面板是他一点点把 AT 指令、PDU 编码、双模组调度啃下来做出来的成果。
+> **请把 Star 留给原仓库** —— 本仓库只是为了方便携带自己的修复而存在的一份副本。
+
+### 本副本相对原作做了什么
+
+仅在 [@zzt718](https://github.com/zzt718) 的原作之上新增，其余全部为原样：
+
+| 版本 | 改动 |
+| --- | --- |
+| `0.3.2-1` | 修复 OpenWrt 23.05 上面板 **全部 AT 交互失效**：rpcd `file.c:812` 的 `if (sid && env) return PERMISSION_DENIED` 发生在任何 ACL 检查之前，而 LuCI 的 `fs.exec()` 必然带 `env` 键。改用只声明 `['command','params']` 的 `fzsexec` 模块绕开，共替换 7 个页面 28 处调用 |
+| `0.3.2-1` | `build_ipk.py`：`control`/`postinst` 打包前统一 CRLF→LF（否则设备上 ash 报 `line 3: { : not found`，服务起不来） |
+| 当前 | `fzs-at` 保留 IMS 原生栈旁路能力：`native_ims_target` / `cmd_ims_native` / `cmd_ims_learn`（P-CSCF 自学习），未装 imsengine 时自动回退原生 CS 域 |
+
+> 上述任何问题**均由本副本的改动负责**，请不要反馈到原作者那里。
+> 若想参与这个面板本身的开发，请直接到 **[zzt718/fzs1-panel](https://github.com/zzt718/fzs1-panel)** —— 那里才是它的家。
+
+---
+
 > **在社区 OpenWrt 固件之上，给「蜂助手 S1」（MIBOX-668M2）加一个中文蜂窝运维面板。**
 > 双模组状态 · 锁频段 · 锁频点/小区 · IMEI 改串 · APN 与数据开关 · 双模组短信收发与转发。
 > 一个 **ipk 包**，浏览器上传即装，**不要求重刷固件**。
@@ -400,6 +434,9 @@ A：见下一节。
 
 ## 致谢
 
+- **[@zzt718](https://github.com/zzt718)（本面板的原作者）** —— 面板的全部源码、UI 设计与 AT/PDU
+  经验均出自他手，本仓库只是他 [zzt718/fzs1-panel](https://github.com/zzt718/fzs1-panel) 的复制副本。
+  **详见 [原作出处与鸣谢](#原作出处与鸣谢本仓库是自-upstream-复制的衍生副本)。**
 - **羁穗**（酷安）—— 本机社区 OpenWrt 固件的编译者
 - **OpenWrt / LuCI** 社区 —— 运行平台
 - 姊妹项目 **[fzs1-decloud](https://github.com/zzt718/fzs1-decloud)** —— 厂商固件去云控与蜂窝工具箱；
