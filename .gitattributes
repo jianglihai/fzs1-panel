@@ -1,0 +1,16 @@
+# 统一按 LF 入库：设备上是 ash/busybox，CRLF 的脚本会报
+#   `line 3: { : not found` / `not found` 之类，服务直接起不来。
+# 本仓库在 Windows 上维护，本机 core.autocrlf=true 会把工作区改成 CRLF，
+# 所以这里显式钉死 eol=lf，避免"本机能跑、设备上炸"。
+* text=auto eol=lf
+
+*.bin binary
+*.ipk binary
+*.png binary
+*.jpg binary
+*.gz binary
+*.tar binary
+
+# 预编译二进制（MIPS），不能被当文本处理
+engine/board-files/usr/bin/imsengine binary
+src/luci-app-fzs/data/usr/bin/fzs-atio binary
