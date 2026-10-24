@@ -492,7 +492,8 @@ All original design and implementation is the work of its author
 
 > 🙏 **Heartfelt thanks to [@zzt718](https://github.com/zzt718)** for the hard work behind this panel.
 > **Please keep your stars for the original repository** — this one exists only to carry a few
-> personal fixes alongside `jianglihai/fzs1-openwrt-ims`.
+> personal fixes, and since 2026-10-25 it also hosts the companion IMS engine (`engine/`),
+> after the separate firmware-build repository was retired.
 
 What this copy adds on top of his work (everything else is untouched original):
 
@@ -500,7 +501,31 @@ What this copy adds on top of his work (everything else is untouched original):
 | --- | --- |
 | `0.3.2-1` | Fixed **all panel AT interaction failing** on OpenWrt 23.05: rpcd `file.c:812` has `if (sid && env) return PERMISSION_DENIED` checked *before* any ACL, while LuCI's `fs.exec()` always sends an `env` key. Replaced with a `fzsexec` module declaring only `['command','params']` — 28 call sites across 7 views |
 | `0.3.2-1` | `build_ipk.py`: normalise CRLF→LF before packing `control`/`postinst` (otherwise ash reports `line 3: { : not found` and services never start) |
+| `0.3.5` | SIM self-heal: "Re-initialise SIM" button on the overview page, `fzs-at sim status/reset`, and a boot-time retry service (`fzs-simretry`) — modules ship with `QSIMDET=0,0`, so a failed SIM handshake at boot leaves them permanently card-less |
 | current | Keeps the IMS native-stack bypass in `fzs-at`: `native_ims_target` / `cmd_ims_native` / `cmd_ims_learn` (P-CSCF auto-learning), falling back to native CS domain when `imsengine` is absent |
+
+### Repository layout (panel + IMS engine, merged)
+
+```
+fzs1-panel/
+├── src/                  panel luci-app-fzs (+ fzs-atio / fzs-push / build_ipk.py)
+├── engine/               IMS engine (formerly the fzs1-openwrt-ims repo)
+│   ├── imsengine/            Go sources
+│   ├── board-files/          files that land on the device (init.d/ims, patch-fzs …)
+│   ├── mkpkg.py              pack engine ipk + repack panel ipk + restore bundle
+│   └── build-engine.sh       cross-compile the engine (MIPS mipsle softfloat)
+├── build-all.sh          one command → both ipks
+└── build/packages/       deliverables (gitignored)
+```
+
+```bash
+bash build-all.sh                 # panel + engine
+bash build-all.sh 0.3.6 0.1.14    # panel version, engine version
+```
+
+Both packages must be installed together (panel first, engine second); a panel without
+the engine hides the "IMS channel" option by design. See [engine/README.md](engine/README.md).
+
 
 > For development of the panel itself, go to
 > [zzt718/fzs1-panel](https://github.com/zzt718/fzs1-panel) — that is its real home.
