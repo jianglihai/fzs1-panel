@@ -1,0 +1,386 @@
+#!/bin/sh /etc/rc.common
+# imsengine init.d —— OpenWrt CPE 自研用户态 IMS 引擎
+#   submit <号码> <内容>  —— 提交一条 IMS 短信发送请求（LuCI→fzs-at ims 分支调它）
+#   patch                —— 给 fzs 短信系统打 IMS 对接补丁（幂等, 启动时自动跑）
+#   learn [端口]         —— P-CSCF 自学习（借 EC200N 的原生 IMS 拿地址给 EC200T 用）
+START=95
+STOP=90
+USE_PROCD=1
+
+REQ_DIR=/tmp/ims-sms
+PATCHER=/usr/lib/imsengine/patch-fzs
+# 兼容旧版安装（0.1.4 及更早）里没有独立 patch-fzs 的情况
+MARK_V3='[ims-bridge] v3'
+
+# 注: 具体的补丁片段与注入逻辑已迁到 /usr/lib/imsengine/（patch-fzs + *.snippet），
+#     这样升级包可独立维护补丁内容，也便于手工执行 / 一键还原。
+
+# ---------- fzs-sms 对接补丁（只动两个点, 全部幂等自愈） ----------
+# ① fzs-at: cmd_sms_send 认目标名 ims/1/2 → 转 /etc/init.d/ims submit（引擎走 SIP MESSAGE）
+# ② sms.js: "目标模组"下拉增加 IMS 选项 + 默认选中 IMS
+patch_fzs() {
+	# 具体注入逻辑在 /usr/lib/imsengine/patch-fzs（片段注入 + 备份 + 可还原），
+	# 这里只负责调用，保持 init.d 简洁；老版本没有该脚本时退化为“什么都不做”。
+	if [ -x "$PATCHER" ]; then
+		"$PATCHER" || true
+	else
+		mkdir -p "$REQ_DIR"
+		return 0
+	fi
+	mkdir -p "$REQ_DIR"
+	return 0
+}
+
+# ---------- IMS 短信提交（fzs-at 的 ims 分支调用） ----------
+# 用法: ims submit <号码> <内容>  （同步等待引擎发送结果, 上限 20s）
+submit_sms() {
+	local num="$1" txt="$2" id i res st
+	[ -n "$num" ] || { echo "号码为空" >&2; return 1; }
+	[ -n "$txt" ] || { echo "内容为空" >&2; return 1; }
+	# IMS 未注册直接拒（避免把用户短信堆到队列里无人问津）
+	# ★ 0.1.8 [lease-info]: 旁路态的 STATE 是「原生 IMS 已注册（旁路）」，
+	#   旧写法 `grep -q "STATE='已注册'"` 是**精确匹配**，会把"已经注册成功"
+	#   误判成未注册直接拒发（旁路时 native_ims_target 临时探测失败就会踩到）。
+	#   改为包含式匹配：已注册 / 原生 IMS 已注册（旁路）都算已注册。
+	if ! grep -q "STATE='[^']*已注册" /tmp/ims_status.txt 2>/dev/null; then
+		st=$(sed -n "s/^STATE='\(.*\)'/\1/p" /tmp/ims_status.txt 2>/dev/null)
+		echo "IMS 未注册（当前状态: ${st:-引擎未运行}），短信未发出。请等 IMS 注册成功后再试" >&2
+		return 1
+	fi
+	mkdir -p "$REQ_DIR"
+	id="$(date +%s)-$$"
+	printf '%s\n' "$num" > "$REQ_DIR/.req.$id.tmp"
+	printf '%s' "$txt" >> "$REQ_DIR/.req.$id.tmp"
+	mv "$REQ_DIR/.req.$id.tmp" "$REQ_DIR/req-$id.txt"
+	i=0
+	while [ $i -lt 20 ]; do   # 20 × 1s = 20s（busybox sleep 不支持小数; 网关应答本就 5~10s）
+		if [ -f "$REQ_DIR/req-$id.done" ]; then
+			res=$(cat "$REQ_DIR/req-$id.done" 2>/dev/null)
+			rm -f "$REQ_DIR/req-$id.done"
+			case "$res" in
+			ok)   return 0 ;;
+			err:*) echo "${res#err:}" >&2; return 1 ;;
+			*)     echo "引擎返回异常: $res" >&2; return 1 ;;
+			esac
+		fi
+		sleep 1
+		i=$((i + 1))
+	done
+	# 超时: 删掉请求（引擎可能正重启, 恢复后补发会造成"以为没发却发了"）
+	rm -f "$REQ_DIR/req-$id.txt" "$REQ_DIR/req-$id.done"
+	echo "IMS 引擎 20s 无响应，短信未发出（请求已撤回）" >&2
+	return 1
+}
+
+# native_ims_port [ims-bypass]: 找出"固件自带 IMS 栈且已注册"的模组 AT 口; 无则空
+#   输出格式: "<模组号> <AT口>"（如 "2 /dev/ttyUSB5"）
+#   ① 优先问面板 fzs-at（luci-app-fzs 0.3.1+ 原生支持 ims native）
+#   ② 否则走自包含探测 —— 这样"只装 imsengine、面板还是旧版"时也能旁路，
+#      不会因 fzs-at 没有 native 子命令而误判为"无原生 IMS"、进而让引擎
+#      跑在自带 IMS 栈的模组上被 AT+QNETDEVCTL 拒绝而永久注册失败。
+native_ims_port() {
+	local r
+	if [ -x /usr/libexec/fzs-at ]; then
+		r=$(/usr/libexec/fzs-at ims native 2>/dev/null | awk '{print $2; exit}')
+		if [ -n "$r" ]; then echo "$r"; return 0; fi
+	fi
+	native_self_detect
+}
+
+# 自包含探测（不依赖任何面板改动）：遍历 AT 口，找"SIM READY + AT+CIREG 已注册(1)"的那个
+#   EC200T 这类无 IMS 栈的模组 AT+CIREG? 会 ERROR 或返回 0 → 自然不旁路，照旧起引擎
+native_self_detect() {
+	local ATIO p out st
+	ATIO=""
+	for c in /usr/bin/fzs-atio /usr/libexec/fzs-atio /usr/bin/atio; do
+		[ -x "$c" ] && { ATIO="$c"; break; }
+	done
+	[ -n "$ATIO" ] || return 1
+	mkdir -p /tmp/ims-native 2>/dev/null
+	# 顺序: 先试各模组的"主 AT 口"(2/5), 再退其它口
+	for p in /dev/ttyUSB2 /dev/ttyUSB5 /dev/ttyUSB1 /dev/ttyUSB4 /dev/ttyUSB0 /dev/ttyUSB3; do
+		[ -c "$p" ] || continue
+		printf 'AT+CPIN?\r\nAT+CIREG?\r\n' > /tmp/ims-native/q 2>/dev/null
+		"$ATIO" -t 2500 -b /tmp/ims-native/q "$p" /tmp/ims-native/o >/dev/null 2>&1
+		out=$(tr -d '\r' < /tmp/ims-native/o 2>/dev/null)
+		case "$out" in *READY*) ;; *) continue ;; esac
+		st=$(printf '%s\n' "$out" | sed -n 's/^+CIREG: *[0-9]*,\([0-9]*\).*$/\1/p' | head -1)
+		[ "$st" = "1" ] || continue
+		# 与 fzs-at ims native 的取值口径一致：只输出 AT 口路径
+		# （ttyUSB0/1/2 = 模组1 EC200T；ttyUSB3/4/5 = 模组2 EC200N，与本机 USB 拓扑一致）
+		echo "$p"
+		return 0
+	done
+	return 1
+}
+
+# native [ims-bypass]: 对外暴露探测结果（fzs-at ims native 的兜底来源）
+native() {
+	native_ims_port
+}
+
+# start_data_only [ims-bypass]: 只启动上网守护, 不启动 imsengine
+# ★ 2026-10-22 [bypass-watch]: 修正开机时序导致的"该旁路却走了引擎"
+#   现象: 刷机/重启后 S95ims 起来时, 模组往往还没完成 IMS 注册(AT+CIREG 还是 0),
+#         start_service 的 native_ims_port 探测落空 → 走引擎模式;
+#         而引擎在自带 IMS 栈的模组上必然卡在 "QNETDEVCTL 绑卡失败/注册失败",
+#         且不会自己回头再看一次 → 表现为"IMS 注册错误 + 没网"。
+#   修法: 起一个后台守望, 等到原生 IMS 注册成功、而引擎正处于失败态时,
+#         自动 restart 本服务, 让 start_service 重新探测并正确进入旁路。
+#   注: 引擎只占 ttyUSB4; 自包含探测优先命中 ttyUSB5/ttyUSB2, 不冲突。
+start_bypass_watch() {
+	{
+		i=0
+		while [ $i -lt 30 ]; do          # 最多守 5 分钟（30 × 10s）
+			sleep 10
+			i=$((i + 1))
+			grep -q '旁路' /tmp/ims_status.txt 2>/dev/null && break
+			_n=$(/etc/init.d/ims native 2>/dev/null)
+			[ -n "$_n" ] || continue
+			grep -qE '注册失败|绑卡失败|ERROR' /tmp/ims_status.txt 2>/dev/null || continue
+			logger -t ims "[bypass-watch] 原生 IMS 已注册($_n)，而引擎注册失败 → 重启服务切旁路"
+			/etc/init.d/ims restart >/dev/null 2>&1
+			break
+		done
+	} &
+}
+
+start_data_only() {
+	procd_open_instance imsdata
+	procd_set_param command /bin/sh /usr/libexec/ims-data
+	procd_set_param respawn 3600 5 5
+	procd_set_param stdout 1
+	procd_set_param stderr 1
+	procd_close_instance
+}
+
+start_service() {
+	local cfg enabled iface cid at_port _np
+
+	patch_fzs
+
+	# ★ 2026-10-21 [ims-bypass]: 模组固件自带 IMS 栈且已注册（如 EC200N + 联通卡）→ 旁路 imsengine。
+	#   引擎是给 EC200T 这类"固件无 IMS 栈"的模组写的; 在自带 IMS 的模组上跑,
+	#   会因 AT+QNETDEVCTL=2,<cid>,1 被模组拒绝而永久停在"注册失败"。
+	#   旁路后短信走该模组原生 AT+CMGS（模组内部即走 IMS 域）, 效果相同。
+	_np=$(native_ims_port)
+	if [ -n "$_np" ]; then
+		# ★ 0.1.8 [lease-info]: 旁路态也要填租期字段。
+		#   面板 IMS 卡片上的「已在线多久 / 下次续租」读的是状态文件里的
+		#   REG_SINCE / UP_SEC / RENEW_MODE —— 这里不写，面板那几项就永远是空的
+		#   （这就是"升级后看不到续租时间"的直接原因）。
+		#
+		#   口径说明（重要，避免误读成"精确注册时长"）：
+		#     原生 IMS 由模组固件自己维护，AT 侧拿不到"注册建立时刻"与"下次续租时刻"。
+		#     故 REG_SINCE 记的是**【本次首次进入旁路的时刻】**，UP_SEC = 现在 - 该时刻，
+		#     近似等于"这条 IMS 注册已经稳定保持了多久"；重启后 /tmp 清空会重新计时。
+		#     真实续租时刻不可见 → RENEW_MODE=native，面板据此显示"由模组固件自动续期"。
+		_bs=/tmp/ims_bypass_since
+		_bh=/tmp/ims_bypass_since_hms
+		if [ ! -s "$_bs" ]; then
+			date +%s > "$_bs" 2>/dev/null
+			date '+%H:%M:%S' > "$_bh" 2>/dev/null
+		fi
+		_since=$(cat "$_bs" 2>/dev/null)
+		case "$_since" in ''|*[!0-9]*) _since=$(date +%s); printf '%s' "$_since" > "$_bs" ;; esac
+		_now=$(date +%s)
+		_up=$((_now - _since))
+		[ "$_up" -lt 0 ] && _up=0
+		_reg_at=$(cat "$_bh" 2>/dev/null)
+		[ -n "$_reg_at" ] || _reg_at=$(date '+%H:%M:%S')
+		printf "STATE='原生 IMS 已注册（旁路）'\nDETAIL='模组 %s 自带 IMS 栈已注册，短信走原生通道'\nENGINE_PORT='%s'\nREG_SINCE='%s'\nUP_SEC='%d'\nRENEW_MODE='native'\n" \
+			"$_np" "$_np" "$_reg_at" "$_up" > /tmp/ims_status.txt
+		logger -t ims "[ims-bypass] 检测到原生 IMS 已注册($_np), 旁路 imsengine"
+		start_data_only
+		return 0
+	fi
+
+	config_load ims
+	config_get_bool enabled ims enabled 1
+	[ "$enabled" = "1" ] || return 0
+
+	config_get iface   ims iface   "rndis-modem1"
+	config_get cid      ims cid     "3"
+	config_get at_port ims at_port "auto"
+
+	procd_open_instance
+	procd_set_param command /usr/bin/imsengine
+	procd_set_param env IMS_IFACE="$iface" IMS_CID="$cid" IMS_AT_PORT="$at_port"
+	# 异常退出重启: 每小时最多 5 次, 每次起来至少活 5 秒
+	procd_set_param respawn 3600 5 5
+	procd_set_param stdout 1
+	procd_set_param stderr 1
+	procd_close_instance
+
+	# 实例2: ims-ppp 上网守护（PPP 拨 cid1 供上网, 与 RNDIS 上的 IMS 物理并行;
+	#   详见 /usr/libexec/ims-ppp 头注释。IMS 不需要它, 它是给"CPE 自己"用的：
+	#   pushplus 短信转发、系统 DNS、固件更新都依赖 IPv4 公网）
+	procd_open_instance imsppp
+	procd_set_param command /bin/sh /usr/libexec/ims-ppp
+	procd_set_param respawn 3600 5 5
+	procd_set_param stdout 1
+	procd_set_param stderr 1
+	procd_close_instance
+
+	# 开机时模组可能还没注册完 IMS，起守望兜底（见 start_bypass_watch 注释）
+	start_bypass_watch
+}
+
+stop_service() {
+	rm -f /tmp/ims_status.txt /tmp/ims_status.txt.tmp
+}
+
+reload_service() {
+	stop
+	start
+}
+
+# ---------- 命令行动作: submit / patch / learn（rc.common EXTRA_COMMANDS 注册） ----------
+EXTRA_COMMANDS="submit patch learn native diag"
+submit() {
+	[ "$1" = "submit" ] && shift
+	submit_sms "$@"
+}
+patch() {
+	patch_fzs
+	exit $?
+}
+
+# learn —— P-CSCF 自学习（借 200N 的原生 IMS 拿地址，给 200T 用）
+#   用法: /etc/init.d/ims learn [/dev/ttyUSB4]
+#   省略端口则自动找 200N 的 AT 口。结果以一行 JSON 打到 stdout，
+#   同时落到 /tmp/ims_learn_last.json 供面板/脚本读取。
+#   前置: SIM 卡必须已插在模组2（EC200N）上。
+learn() {
+	[ "$1" = "learn" ] && shift
+	_out=$(/usr/bin/imsengine learn "$@" 2>&1)
+	_rc=$?
+	printf '%s\n' "$_out" > /tmp/ims_learn_last.json
+	printf '%s\n' "$_out"
+	return $_rc
+}
+
+# ---------- diag: 一键导出诊断报告（面板「导出诊断日志」按钮调它） ----------
+#
+#   用法: /etc/init.d/ims diag              → 屏幕上直接看
+#         /etc/init.d/ims diag > /tmp/a.txt  → 存成文件再拷走
+#
+#   为什么要有这个：IMS 失败的原因散在状态文件、引擎日志、syslog、AT 侧注册态、
+#   网络承载、配置六七个地方，远程排障每次都要来回要命令输出。这里一次收齐。
+#
+#   设计约束（改之前先看）:
+#     ① 设备 tmpfs 只有 30MB、rpcd 的 exec 回传也有上限
+#        → 每段都限行，整份目标 < 64KB
+#     ② 不输出明文口令：uci 里 password/key/secret 一律打码
+#     ③ 只读：不 restart、不改配置、不写 uci，可反复执行
+#     ④ 按"层次"分段：环境 → 版本 → 文件 → 状态 → 服务 → AT 注册 → 日志 → 网络 → 配置
+#        别人拿到这一份就能判断卡在哪一层，不用再猜
+diag() {
+	echo "================= IMS 诊断报告 ================="
+	echo "生成时间 : $(date '+%Y-%m-%d %H:%M:%S %Z')"
+	echo "型号     : $(cat /tmp/sysinfo/model 2>/dev/null)"
+	echo "板型     : $(cat /tmp/sysinfo/board_name 2>/dev/null)"
+	echo "固件     : $(. /etc/openwrt_release 2>/dev/null; echo "$DISTRIB_DESCRIPTION")"
+	echo "内核     : $(uname -sr)"
+	echo "运行时长 : $(uptime 2>/dev/null | sed 's/^ *//')"
+	echo "overlay  : $(df -h /overlay 2>/dev/null | tail -1 | sed 's/  */ /g')"
+	echo
+	echo "--------- [1] 软件版本 ---------"
+	opkg list-installed 2>/dev/null | grep -E '^(imsengine|luci-app-fzs|ttyd|luci-app-ttyd) ' || echo "(opkg 里无记录)"
+	echo
+	echo "--------- [2] 关键文件 ---------"
+	for _f in /usr/bin/imsengine /etc/init.d/ims /usr/libexec/ims-data /usr/libexec/ims-ppp \
+	          /usr/lib/imsengine/patch-fzs /usr/libexec/fzs-at /usr/libexec/fzs-atio; do
+		if [ -e "$_f" ]; then
+			echo "  OK   $_f  ($(ls -l "$_f" 2>/dev/null | awk '{print $1,$3,$5}'))"
+		else
+			echo "  MISS $_f"
+		fi
+	done
+	echo "  P-CSCF 学习档案: $([ -s /etc/pcscf_learned.json ] && echo '有 /etc/pcscf_learned.json' || echo '无')"
+	echo
+	echo "--------- [3] 引擎状态文件 /tmp/ims_status.txt ---------"
+	cat /tmp/ims_status.txt 2>/dev/null || echo "(无：服务没起过，或刚重启还没写)"
+	echo
+	echo "--------- [4] 面板实际读到的（fzs-at ims status）---------"
+	if [ -x /usr/libexec/fzs-at ]; then
+		/usr/libexec/fzs-at ims status 2>&1 | head -3
+	else
+		echo "(无 fzs-at)"
+	fi
+	echo
+	echo "--------- [5] 相关进程 ---------"
+	ps 2>/dev/null | grep -E 'imsengine|ims-data|ims-ppp|fzs-smsd' | grep -v grep || echo "(无相关进程)"
+	echo
+	echo "--------- [6] 开机自启 ---------"
+	for _l in /etc/rc.d/S95ims /etc/rc.d/S95fzs-sms; do
+		[ -L "$_l" ] && echo "  OK   $_l -> $(readlink "$_l")" || echo "  MISS $_l"
+	done
+	echo
+	echo "--------- [7] AT 口与注册态（CPIN / CIREG / CSQ）---------"
+	ls /dev/ttyUSB* 2>/dev/null | tr '\n' ' ' | sed 's/^/  口列表: /'
+	echo
+	_ATIO=""
+	for _b in /usr/bin/fzs-atio /usr/libexec/fzs-atio /usr/bin/atio; do
+		[ -x "$_b" ] && { _ATIO="$_b"; break; }
+	done
+	if [ -n "$_ATIO" ]; then
+		for _p in /dev/ttyUSB2 /dev/ttyUSB5; do
+			[ -c "$_p" ] || continue
+			echo "  --- $_p ---"
+			_o=/tmp/.imsdiag.o
+			rm -f "$_o"
+			# ★ 调用约定必须与面板 fzs-at 的 at_query() 一致：
+			#   命令走 **stdin**（不是 -b 文件），-t 为毫秒超时，-d 为排空延迟。
+			#   0.1.9 曾写成 `-b qfile port outfile`，参数形式全错 ⇒ 每个口都
+			#   "无响应"，AT 段等于白给。
+			#   flock 与 fzs-sms 的短信轮询共用 /tmp/fzs-at-<port>.lock，
+			#   保证同一时刻只有一个会话占用 AT 口。
+			#   外面套 watchdog：串口被引擎占着时 fzs-atio 可能永久阻塞
+			#   （实测 8 秒不返回），6 秒必杀，绝不让整份报告挂死。
+			( flock 9
+			  printf 'AT\nATE0\nAT+CPIN?\nAT+CIREG?\nAT+CSQ\nAT+QCFG="ims"\n' \
+				| "$_ATIO" -t 800 -d 200 "$_p"
+			) 9>"/tmp/fzs-at-$(basename "$_p").lock" > "$_o" 2>&1 &
+			_apid=$!
+			# ★ 这个后台 watchdog 必须把 stdout/stderr 全部重定向掉。
+			#   面板是通过 ubus file.exec 调的，rpcd 要读 stdout 到 EOF 才返回；
+			#   只要有一个后台子进程还攥着这个管道 fd，rpcd 就会一直等到
+			#   自己的 30 秒超时才报错（实测：SSH 直跑 2 秒，面板调用 30 秒超时）。
+			( sleep 6; kill -9 "$_apid" 2>/dev/null ) >/dev/null 2>&1 &
+			_awd=$!
+			wait "$_apid" 2>/dev/null
+			kill -9 "$_awd" 2>/dev/null
+			wait "$_awd" 2>/dev/null
+			tr -d '\r' < "$_o" 2>/dev/null | grep -E '^\+|^ERROR|^OK' | head -8 | sed 's/^/    /'
+			grep -qE '^\+|^OK' "$_o" 2>/dev/null || echo "    (无响应 / 超时)"
+			rm -f "$_o"
+		done
+	else
+		echo "  (无 fzs-atio，跳过 AT 探测)"
+	fi
+	echo
+	echo "--------- [8] 引擎日志 /tmp/imsengine.log（尾 120 行）---------"
+	if [ -r /tmp/imsengine.log ]; then
+		tail -n 120 /tmp/imsengine.log
+	else
+		echo "(无 /tmp/imsengine.log)"
+	fi
+	echo
+	echo "--------- [9] 系统日志（IMS 相关，尾 60 行）---------"
+	logread 2>/dev/null | grep -iE 'ims|CIREG|P-CSCF|REGISTER|APN' | tail -n 60 || echo "(无)"
+	echo
+	echo "--------- [10] 网络承载 ---------"
+	ip -4 addr show 2>/dev/null | grep -E '^[0-9]+: |inet ' | sed 's/^/  /' | head -24
+	echo "  默认路由:"
+	ip route 2>/dev/null | grep default | sed 's/^/    /' || echo "    (无默认路由 —— 上网层就没通)"
+	echo
+	echo "--------- [11] 配置（口令已打码）---------"
+	uci show ims 2>/dev/null | sed -e 's/\(password[^=]*=\).*/\1***/' -e 's/\(secret[^=]*=\).*/\1***/' | head -20
+	echo
+	echo "--------- [12] 已学 P-CSCF ---------"
+	head -c 800 /etc/pcscf_learned.json 2>/dev/null || echo "(无)"
+	echo
+	echo "================= 报告结束 ================="
+}
+

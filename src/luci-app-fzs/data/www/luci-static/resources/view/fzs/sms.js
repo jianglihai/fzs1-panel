@@ -772,6 +772,9 @@ return view.extend({
 		var stIms = E('span', { 'class': 'fzs-status' }, '读取中…');
 		var btnImsRefresh = E('button', { 'class': 'fzs-hbtn' }, '刷新状态');
 		var btnImsLearn = E('button', { 'class': 'cbi-button' }, '学习 P-CSCF');
+		// ★ 0.1.8 [diag]: 一键导出诊断日志。排障时不用再一条条要命令输出，
+		//   点一下拿到 txt 直接发人（含版本、状态、AT 注册态、引擎日志、网络、配置）。
+		var btnImsDiag = E('button', { 'class': 'cbi-button' }, '导出诊断日志');
 
 		// 秒 → “3 分 20 秒” 这类人话
 		function durSec(n) {
@@ -802,7 +805,14 @@ return view.extend({
 				// 租期信息：让人一眼看出"注册稳不稳"，不用去翻日志
 				var up = durSec(d.up_sec);
 				if (up) t += ' · 已在线 ' + up;
-				if (d.next_renew) t += ' · 下次续租 ' + d.next_renew;
+				// ★ 0.1.8 [lease-info]: 旁路（模组原生 IMS）时续租由模组固件负责，
+				//   CPE 侧读不到具体时刻。这里必须明确说清"由谁续"，否则留空会让人
+				//   以为功能坏了（此前"看不到续租时间"就是这么来的）。
+				if (d.renew_mode === 'native') {
+					t += ' · 续租由模组固件自动完成';
+				} else if (d.next_renew) {
+					t += ' · 下次续租 ' + d.next_renew;
+				}
 				var rx = parseInt(d.net_rx_ago, 10);
 				if (!isNaN(rx) && rx >= 0) {
 					t += ' · 网络侧最后一次响应 ' + (rx < 5 ? '刚刚' : durSec(rx) + '前');
@@ -838,10 +848,43 @@ return view.extend({
 			});
 		});
 
+		// ---- 导出诊断日志 ----
+		//   后端 /etc/init.d/ims diag 汇总：环境/版本/文件/状态/进程/自启/AT 注册态/
+		//   引擎日志/syslog/网络/配置（口令已打码）。这里只负责把文本落成文件下载。
+		function two(n) { return (n < 10 ? '0' : '') + n; }
+		btnImsDiag.addEventListener('click', function() {
+			btnImsDiag.disabled = true;
+			stIms.textContent = '正在收集诊断信息…（含 AT 探测，最长约 15 秒，请稍候）';
+			fzsexec.exec(FZS_AT, [ 'ims', 'diag' ]).then(function(r) {
+				var txt = (r && r.stdout) || '';
+				if (!txt) {
+					stIms.textContent = '❌ 诊断无输出：' + errMsg(r, null);
+					return;
+				}
+				var d0 = new Date();
+				var name = 'ims-diag-' + d0.getFullYear() + two(d0.getMonth() + 1) + two(d0.getDate())
+					+ '-' + two(d0.getHours()) + two(d0.getMinutes()) + two(d0.getSeconds()) + '.txt';
+				var blob = new Blob([ txt ], { type: 'text/plain;charset=utf-8' });
+				var url = URL.createObjectURL(blob);
+				var a = document.createElement('a');
+				a.href = url;
+				a.download = name;
+				document.body.appendChild(a);
+				a.click();
+				document.body.removeChild(a);
+				setTimeout(function() { URL.revokeObjectURL(url); }, 5000);
+				stIms.textContent = '✅ 已导出 ' + name + '（' + Math.max(1, Math.round(txt.length / 1024)) + ' KB）';
+			}, function(e) {
+				stIms.textContent = '❌ 导出失败：' + e;
+			}).then(function() {
+				btnImsDiag.disabled = false;
+			});
+		});
+
 		var imsCard = E('div', { 'class': 'cbi-section fzs-card', style: 'margin-top:1em' }, [
 			E('h3', { 'class': 'fzs-card-h' }, [ E('span', {}, 'IMS 通道'), stIms, btnImsRefresh ]),
 			E('div', { 'class': 'cbi-section-node fzs-body' }, [
-				E('div', { 'class': 'fzs-actions' }, [ btnImsLearn ]),
+				E('div', { 'class': 'fzs-actions' }, [ btnImsLearn, btnImsDiag ]),
 				E('div', { 'class': 'fzs-tip' },
 					'短信默认走 IMS 通道（数据通道），不再用模组的 CS 域短信，EC200T 的 CMS 500 报错由此根治。' +
 					'「学习 P-CSCF」只在换卡/换运营商后需要做一次：把卡插到模组2(EC200N，固件带原生 IMS) 上点一次，' +

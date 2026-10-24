@@ -1,0 +1,6 @@
+# 打包产物
+build/
+
+# Python
+__pycache__/
+*.pyc

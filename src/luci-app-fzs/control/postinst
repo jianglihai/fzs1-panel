@@ -39,6 +39,11 @@
 
     /etc/init.d/fzs-sms enable 2>/dev/null
     /etc/init.d/fzs-sms restart 2>/dev/null
+    # ★ 2026-10-25 [sim-reset]：开机读卡自愈。模组 QSIMDET 出厂关闭，
+    #   SIM 只在开机那一瞬间初始化，握手失败就永久停在"无卡"、只能重启整机。
+    #   这个服务在 boot 后 30 秒检查一次，读不到的模组做 CFUN 循环再试。
+    #   enable 了才有意义（它是一次性任务，不在装完后立刻跑）。
+    /etc/init.d/fzs-simretry enable 2>/dev/null
     rm -rf /tmp/luci-indexcache* 2>/dev/null
     /etc/init.d/rpcd reload 2>/dev/null
 

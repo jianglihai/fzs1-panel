@@ -839,21 +839,156 @@ cmd_ims_learn() {   # $1=学习源 AT 口（可选, 省略自动探测）
 # cmd_ims_status: 引擎当前状态（面板展示用）
 cmd_ims_status() {
 	_st="未安装"; _det=""; _imsi=""
-	_up=""; _rx=""; _next=""
+	_up=""; _rx=""; _next=""; _rm=""
 	if [ -r /tmp/ims_status.txt ]; then
 		. /tmp/ims_status.txt 2>/dev/null
 		_st="${STATE:-未知}"; _det="${DETAIL:-}"; _imsi="${T_IMSI:-}"
 		# 0.1.6 起引擎额外写入注册租期信息（回答"注册会不会过期"）
 		_up="${UP_SEC:-}"; _rx="${NET_RX_AGO:-}"; _next="${NEXT_RENEW:-}"
+		# ★ 0.1.8 [lease-info]: native=续租由模组固件自己完成，CPE 侧看不到时刻，
+		#   面板据此改文案（否则会以为"下次续租时间"取不到是坏了）。
+		_rm="${RENEW_MODE:-}"
 	elif [ -x /etc/init.d/ims ]; then
 		_st="未启动"
 	fi
 	_e=$(printf '%s' "$_det" | tr '\r\n' '  ' | sed 's/\\/\\\\/g; s/"/\\"/g')
-	printf '{"state":"%s","detail":"%s","imsi":"%s","up_sec":"%s","net_rx_ago":"%s","next_renew":"%s"}\n' \
-		"$_st" "$_e" "$_imsi" "$_up" "$_rx" "$_next"
+	printf '{"state":"%s","detail":"%s","imsi":"%s","up_sec":"%s","net_rx_ago":"%s","next_renew":"%s","renew_mode":"%s"}\n' \
+		"$_st" "$_e" "$_imsi" "$_up" "$_rx" "$_next" "$_rm"
 }
 
-[ $# -ge 1 ] || die "用法: $ME {info|imei|ports|apn|data|fun|sms|ims} ..."
+# ── SIM 卡读写状态 / 重新初始化 [sim-reset] 2026-10-25 ──────────────────────
+# ★ 为什么需要这套命令
+#   EC200T / EC200N 的 AT+QSIMDET 出厂值是 0,0 —— **热插拔检测是关闭的**。
+#   含义很关键：模组**只在开机（或 CFUN 切换）那一瞬间**初始化 SIM，
+#   之后既不检测拔插、也不会自己重试。于是"开机那一刻卡没握上手"
+#   （卡没插到底 / 触点氧化 / 卡座弹片压力不足）会让模组**永久停在无卡状态**：
+#   面板一直读不到卡，把卡拔出来重插也没用，只有重启整机才可能恢复。
+#   —— 这正是现场那句"以前能读、后来一直读不到，换张卡又好了"的机理。
+# 对策：CFUN=0 → CFUN=1 让模组重新上电并重跑一遍 SIM 初始化，不必重启设备。
+# 实测边界（2026-10-25，EC200T + 联通卡）：
+#   · 能救「开机握手失败被锁死」这一类；
+#   · 救不了真·接触不良 —— 该卡 CFUN 循环 3 轮、AT+CFUN=1,1 模组软重启、
+#     AT+QSIMDET=1,1 强制检测全部无效，CPIN? 恒为 ERROR 10、QINISTAT 恒 0、
+#     AT+CSIM 直发 APDU 也拿不到响应 ⇒ 那是硬件侧的事（清触点/垫片/换卡座）。
+sim_parse() {   # stdin = at_query 原始响应 → 输出 "cpin|iccid|imsi|qinistat|cerr"
+	awk '
+		/^\+CPIN:/      { c=$0; sub(/^\+CPIN: */,"",c);      cpin=c }
+		/^\+CME ERROR:/ { c=$0; sub(/^\+CME ERROR: */,"",c); if (cerr=="") cerr=c }
+		/^\+CMS ERROR:/ { c=$0; sub(/^\+CMS ERROR: */,"",c); if (cerr=="") cerr=c }
+		/^\+QCCID:/     { c=$0; sub(/^\+QCCID: */,"",c);  gsub(/"/,"",c); if (iccid=="") iccid=c }
+		/^\+ICCID:/     { c=$0; sub(/^\+ICCID: */,"",c);  gsub(/"/,"",c); if (iccid=="") iccid=c }
+		/^\+CCID:/      { c=$0; sub(/^\+CCID: */,"",c);   gsub(/"/,"",c); if (iccid=="") iccid=c }
+		/^\+QINISTAT:/  { c=$0; sub(/^\+QINISTAT: */,"",c); qini=c }
+		/^[0-9]+$/      { if (imsi=="" && length($0)>=14 && length($0)<=20) imsi=$0 }
+		END { printf "%s|%s|%s|%s|%s\n", cpin, iccid, imsi, qini, cerr }
+	'
+}
+
+# 把 CPIN/CME 错误码翻成面板能懂的三态：
+#   ok     = 卡可读（READY）
+#   absent = 模组认为卡不在（ERROR 10）→ 没插到底 / 触点不通
+#   fail   = 卡在位但初始化失败（ERROR 13/14/15/16）→ 电气或协议问题
+sim_state() {   # $1=cpin $2=cerr
+	case "$1" in
+	READY) echo ok ;;
+	*) case "$2" in
+		10)          echo absent ;;
+		13|14|15|16) echo fail ;;
+		*)           echo fail ;;
+	   esac ;;
+	esac
+}
+
+cmd_sim_status() {   # $1=目标（省略 = 两个模组都读）
+	if [ -n "$1" ]; then _list="$1"; else _list="1 2"; fi
+	_o=""
+	for _t in $_list; do
+		_p=$(target_to_port "$_t") 2>/dev/null
+		if [ -z "$_p" ]; then
+			_o="$_o${_o:+,}{\"name\":\"$(jesc "$(target_name "$_t")")\",\"ok\":false,\"err\":\"找不到 AT 口\"}"
+			continue
+		fi
+		_buf=$(at_query "$_p" 'AT+CPIN?' 'AT+QCCID' 'AT+CIMI' 'AT+QINISTAT' 2>/dev/null)
+		if [ -z "$_buf" ]; then
+			_o="$_o${_o:+,}{\"name\":\"$(jesc "$(target_name "$_t")")\",\"port\":\"$_p\",\"ok\":false,\"err\":\"模组无响应\"}"
+			continue
+		fi
+		_r=$(printf '%s\n' "$_buf" | sim_parse)
+		_cpin=$(printf '%s' "$_r" | cut -d'|' -f1)
+		_cerr=$(printf '%s' "$_r" | cut -d'|' -f5)
+		_o="$_o${_o:+,}{\"name\":\"$(jesc "$(target_name "$_t")")\",\"port\":\"$_p\",\"ok\":true,\"card\":\"$(sim_state "$_cpin" "$_cerr")\",\"cpin\":\"$(jesc "$_cpin")\",\"iccid\":\"$(printf '%s' "$_r" | cut -d'|' -f2)\",\"imsi\":\"$(printf '%s' "$_r" | cut -d'|' -f3)\",\"qinistat\":\"$(printf '%s' "$_r" | cut -d'|' -f4)\",\"cerr\":\"$_cerr\"}"
+	done
+	printf '[%s]\n' "$_o"
+}
+
+sim_reset_one() {   # $1=目标 → 单行 JSON
+	_t="$1"
+	_nm=$(target_name "$_t")
+	_p=$(target_to_port "$_t") 2>/dev/null
+	if [ -z "$_p" ]; then
+		printf '{"name":"%s","ok":false,"err":"找不到 AT 口"}\n' "$(jesc "$_nm")"
+		return 0
+	fi
+	# 复位前状态：面板据此区分"本来就好"和"这次救回来了"
+	_b=$(at_query "$_p" 'AT+CPIN?' 2>/dev/null)
+	_before=$(printf '%s\n' "$_b" | sed -n 's/^+CPIN: *//p' | head -1)
+	# ★★ 安全护栏（2026-10-25 实测教训，别删）
+	#   CFUN 循环会把该模组的 PDP 承载打断，而**数据面并不会自动恢复**：
+	#   实测 CFUN=0→1 后 CID1 仍是 act=1、有 IP、CREG 已注册，但外网完全不通
+	#   （连运营商 DNS 都不响应），只有 AT+CFUN=1,1 模组级重启才行 —— 而那样
+	#   USB 会重新枚举、rndis-modemN 名字丢失变回 usb0/usb1，必须再跑
+	#   /usr/libexec/mifi-rndis.sh 才能修回来。
+	#   ⇒ 正在承载默认路由的模组一律拒绝，避免"为了修读卡把上网搞断"。
+	#   读不到卡的模组本来就没在跑数据，正常永远不会命中这条。
+	case "$(port_model "$_p")" in
+	EC200T) _cfg=modem1 ;;
+	EC200N) _cfg=modem2 ;;
+	*)      _cfg="" ;;
+	esac
+	if [ -n "$_cfg" ] && ip route 2>/dev/null | grep -q "^default .*dev rndis-$_cfg"; then
+		printf '{"name":"%s","port":"%s","ok":false,"card":"busy","err":"该模组正在承载上网流量，重新初始化会中断数据面且需要重启模组才能恢复，已拒绝执行。请先把上网切到另一块模组再试，或直接重启设备。"}\n' \
+			"$(jesc "$_nm")" "$_p"
+		return 0
+	fi
+	# ★ 关射频 → 模组掉电 SIM 接口；再开 → 重新上电并重跑初始化
+	#   （只用 CFUN=0/1，绝不用 CFUN=1,1：后者会重启模组并丢 rndis 接口名）
+	at_query "$_p" 'AT+CFUN=0' >/dev/null 2>&1
+	sleep 3
+	at_query "$_p" 'AT+CFUN=1' >/dev/null 2>&1
+	# 轮询等 READY：实测 8~15 秒就绪，留 30 秒余量（6 次 × 5 秒）
+	_i=0; _r=""
+	while [ "$_i" -lt 6 ]; do
+		sleep 5
+		_buf=$(at_query "$_p" 'AT+CPIN?' 'AT+QCCID' 'AT+CIMI' 'AT+QINISTAT' 2>/dev/null)
+		_r=$(printf '%s\n' "$_buf" | sim_parse)
+		[ "$(printf '%s' "$_r" | cut -d'|' -f1)" = "READY" ] && break
+		_i=$((_i+1))
+	done
+	_cpin=$(printf '%s' "$_r" | cut -d'|' -f1)
+	_cerr=$(printf '%s' "$_r" | cut -d'|' -f5)
+	# CFUN 循环会让 PDP 去激活；若此刻默认路由没了，如实告诉面板（守护通常几十秒内重拨）
+	_net=""
+	ip route 2>/dev/null | grep -q '^default' || _net=',"net_lost":true'
+	printf '{"name":"%s","port":"%s","ok":true,"card":"%s","before":"%s","cpin":"%s","iccid":"%s","imsi":"%s","qinistat":"%s","cerr":"%s","tries":%s%s}\n' \
+		"$(jesc "$_nm")" "$_p" "$(sim_state "$_cpin" "$_cerr")" "$(jesc "$_before")" \
+		"$(jesc "$_cpin")" "$(printf '%s' "$_r" | cut -d'|' -f2)" "$(printf '%s' "$_r" | cut -d'|' -f3)" \
+		"$(printf '%s' "$_r" | cut -d'|' -f4)" "$_cerr" "$((_i+1))" "$_net"
+}
+
+cmd_sim_reset() {   # $1=目标（省略 = 两个模组串行做，较慢）
+	if [ -n "$1" ]; then
+		sim_reset_one "$1"
+		return 0
+	fi
+	_o=""
+	for _x in 1 2; do
+		_one=$(sim_reset_one "$_x")
+		_o="$_o${_o:+,}$_one"
+	done
+	printf '[%s]\n' "$_o"
+}
+
+[ $# -ge 1 ] || die "用法: $ME {info|imei|ports|apn|data|fun|sms|ims|sim} ..."
 
 CMD="$1"; shift
 case "$CMD" in
@@ -957,6 +1092,22 @@ ims)
 	status) cmd_ims_status ;;
 	# [ims-bypass] 探测"固件自带 IMS 栈且已注册"的模组: 输出 "<target> <at口>"
 	native) cmd_ims_native ;;
+	# ★ 0.1.8 [diag]: 一键诊断报告（面板「导出诊断日志」按钮调它）
+	#   转发给 init.d —— 诊断逻辑放在 imsengine 包里维护，面板只做入口，
+	#   这样面板与引擎版本可以各自独立升级，不会因为面板旧了就没有诊断能力。
+	#   走 fzs-at 而不用直连 /etc/init.d/ims，是为了复用现有 ACL 白名单
+	#   （acl.d 已放通 "fzs-at * * * *"），升级面板后不必额外重启 rpcd。
+	diag) exec /etc/init.d/ims diag ;;
+	*) die "未知子命令: $_sub" ;;
+	esac
+	;;
+sim)
+	# [sim-reset] 2026-10-25：读卡状态查询 + 强制重新初始化（免重启整机）
+	[ $# -ge 1 ] || die "用法: $ME sim {status|reset} [目标]"
+	_sub="$1"; shift
+	case "$_sub" in
+	status) cmd_sim_status "$1" ;;
+	reset) cmd_sim_reset "$1" ;;
 	*) die "未知子命令: $_sub" ;;
 	esac
 	;;

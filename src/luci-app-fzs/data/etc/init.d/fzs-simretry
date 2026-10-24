@@ -1,0 +1,29 @@
+#!/bin/sh /etc/rc.common
+# fzs-simretry —— 开机 SIM 自愈服务（2026-10-25）
+#
+# 一次性任务，不是常驻守护：boot 后 30 秒检查两块模组的读卡状态，
+# 读不到的做一次 CFUN 循环强制重新初始化（原理见 /usr/libexec/fzs-simretry）。
+#
+# 之所以要开机跑：模组的 QSIMDET 出厂关闭，SIM 只在开机那一下初始化，
+# 握手失败就永久停摆，必须重启整机才能救 —— 这层自愈把"重启整机"变成
+# "模组自己再试一次"，用户侧表现为"开机没读到卡的，过一会儿自己好了"。
+#
+# 开关：uci set fzs-sms.globals.sim_retry=0 （插物联卡/卡槽常空的机器可关掉）
+
+START=96
+STOP=10
+
+start() {
+	[ -x /usr/libexec/fzs-simretry ] || return 0
+	local v
+	config_load fzs-sms 2>/dev/null
+	config_get v globals sim_retry 1
+	[ "$v" = "0" ] && return 0
+	# 独立进程后台跑：rc 的 start 要立刻返回，不能阻塞开机流程
+	/usr/libexec/fzs-simretry >/dev/null 2>&1 &
+}
+
+stop() {
+	killall fzs-simretry 2>/dev/null
+	return 0
+}

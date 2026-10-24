@@ -27,10 +27,43 @@
 | --- | --- |
 | `0.3.2-1` | 修复 OpenWrt 23.05 上面板 **全部 AT 交互失效**：rpcd `file.c:812` 的 `if (sid && env) return PERMISSION_DENIED` 发生在任何 ACL 检查之前，而 LuCI 的 `fs.exec()` 必然带 `env` 键。改用只声明 `['command','params']` 的 `fzsexec` 模块绕开，共替换 7 个页面 28 处调用 |
 | `0.3.2-1` | `build_ipk.py`：`control`/`postinst` 打包前统一 CRLF→LF（否则设备上 ash 报 `line 3: { : not found`，服务起不来） |
+| `0.3.5` | 读卡自愈：面板概览页「重新初始化 SIM」按钮 + `fzs-at sim status/reset` + 开机自愈服务 `fzs-simretry`（模组 `QSIMDET=0,0` 导致开机握手失败就永久无卡，这层把它变成"过一会儿自己好了"） |
 | 当前 | `fzs-at` 保留 IMS 原生栈旁路能力：`native_ims_target` / `cmd_ims_native` / `cmd_ims_learn`（P-CSCF 自学习），未装 imsengine 时自动回退原生 CS 域 |
 
 > 上述任何问题**均由本副本的改动负责**，请不要反馈到原作者那里。
 > 若想参与这个面板本身的开发，请直接到 **[zzt718/fzs1-panel](https://github.com/zzt718/fzs1-panel)** —— 那里才是它的家。
+
+---
+
+## 仓库结构（面板 + IMS 引擎同仓）
+
+2026-10-25 起，原来的固件编译仓库 `fzs1-openwrt-ims` 已停用删除，**引擎源码并入本仓库**，
+改插件不再需要碰 OpenWrt 固件编译链：
+
+```
+fzs1-panel/
+├── src/                  面板源码 luci-app-fzs（+ fzs-atio / fzs-push / build_ipk.py）
+│   └── dist/             面板 ipk 产物（.gitignore，本地生成）
+├── engine/               ★ IMS 引擎（原 fzs1-openwrt-ims）
+│   ├── imsengine/            Go 源码
+│   ├── board-files/          设备上实际落地的文件（init.d/ims、patch-fzs …）
+│   ├── mkpkg.py              打包：引擎 ipk + 面板 ipk 重封 + 恢复包
+│   └── build-engine.sh       交叉编译引擎（MIPS mipsle softfloat）
+├── build-all.sh          一条命令出两个 ipk
+└── build/packages/       最终交付产物（.gitignore）
+```
+
+**打包：**
+
+```bash
+bash build-all.sh                 # 面板 + 引擎，两个 ipk 一次出
+bash build-all.sh 0.3.6 0.1.14    # 指定面板版本 / 引擎版本
+```
+
+设备端安装**必须两个包一起装**（先面板、后引擎），只装面板会看不到 IMS 入口 ——
+面板检测不到引擎时会把「IMS 通道」选项主动隐藏，这是设计如此。
+细节见 [engine/README.md](engine/README.md)。
+
 
 ---
 

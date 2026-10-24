@@ -68,7 +68,10 @@ var CSS = [
 	'.fzs-ab-t{margin:1.1em 0 .2em;font-size:.85em;color:var(--text-color-low)}',
 	'.fzs-ab a.fzs-ab-btn{display:inline-block;margin-top:.5em;padding:.3em .95em;font-size:.92em;border:1px solid var(--border-color-medium, #d4d8dc);border-radius:4px;text-decoration:none;color:inherit}',
 	'.fzs-ab a.fzs-ab-btn:hover{border-color:var(--primary-color-high, var(--main-bright-color, #1976d2))}',
-	'.fzs-ab-warn{margin-top:1.1em;padding:.6em .8em;border-radius:4px;font-size:.88em;line-height:1.6;background:rgba(255,152,0,.12);border:1px solid rgba(255,152,0,.35);color:var(--text-color-medium, #6b6b6b)}'
+	'.fzs-ab-warn{margin-top:1.1em;padding:.6em .8em;border-radius:4px;font-size:.88em;line-height:1.6;background:rgba(255,152,0,.12);border:1px solid rgba(255,152,0,.35);color:var(--text-color-medium, #6b6b6b)}',
+	// ── 读不到卡时的「重新初始化」条（2026-10-25 [sim-reset]）──
+	'.fzs-simfix{display:flex;align-items:center;gap:.7em;flex-wrap:wrap;margin-top:.9em;padding-top:.85em;border-top:1px dashed var(--border-color-low, #e5e8eb)}',
+	'.fzs-simfix .fzs-simfix-msg{flex:1 1 100%;font-size:.88em;line-height:1.6;color:var(--text-color-medium, #6b6b6b)}'
 ].join('\n');
 
 function fetchAll() {
@@ -130,7 +133,52 @@ function idRow(label, value) {
 	return E('div', { 'class': 'fzs-id' }, [ E('label', {}, label), span, full ? btn : '' ]);
 }
 
-function modemCard(m) {
+// ── 读不到卡时的「重新初始化 SIM」条（2026-10-25 [sim-reset]）──
+//   背景：EC200T/EC200N 的 AT+QSIMDET 出厂 0,0（热插拔检测关闭），模组**只在
+//   开机那一瞬间**初始化 SIM，握手失败就永久停在"无卡"——拔插卡无效、只能重启
+//   整机。这里点一下让模组 CFUN 0→1 重新上电重跑初始化，通常 15~30 秒出结果，
+//   不用为了读卡去重启整台设备。
+//   ★ 文案必须如实：确实读不到时要说清"这是硬件侧的事"，别让人反复点。
+function simFixRow(m, reload) {
+	var msg = E('div', { 'class': 'fzs-simfix-msg' },
+		'未识别到 SIM 卡。若这张卡以前能读、现在一直读不到，多半是开机时没握手成功被锁住了 —— 点右边重试一次即可，不必重启设备。');
+	var btn = E('button', { 'class': 'cbi-button cbi-button-action' }, '重新初始化 SIM');
+	btn.addEventListener('click', function() {
+		btn.disabled = true;
+		msg.textContent = '正在让模组重新上电并重读 SIM…（约 20~40 秒；这个模组会短暂掉网，另一个模组不受影响）';
+		fzsexec.exec(FZS_AT, [ 'sim', 'reset', m.port ]).then(function(r) {
+			var d = null;
+			try { d = JSON.parse((r && r.stdout) || ''); } catch (e) {}
+			btn.disabled = false;
+			if (!d) {
+				msg.textContent = '❌ 操作无返回：' + ((r && (r.stderr || r.stdout)) || '模组可能无响应');
+				return;
+			}
+			if (d.card === 'ok') {
+				msg.textContent = '✅ 已读到卡：ICCID ' + (d.iccid || '—') +
+					(d.imsi ? ('　IMSI ' + d.imsi) : '') + '　（模组已恢复，页面即将刷新）';
+			} else if (d.card === 'busy') {
+				// 后端安全护栏：正在承载默认路由的模组会被拒绝，别硬来
+				msg.textContent = '⚠️ ' + (d.err || '该模组正在承载上网流量，已拒绝执行。');
+			} else if (d.card === 'absent') {
+				// ERROR 10 = 模组认为卡根本没插 → 软件重试救不回来，必须动硬件
+				msg.textContent = '❌ 模组仍报「卡未插入」（已重试 ' + (d.tries || 1) + ' 次）。' +
+					'这说明是硬件侧接触问题，再点也不会有用：请断电取出卡片，用橡皮擦净金属触点后插到底；' +
+					'仍不行就在卡背面（芯片对面）贴一小片约 0.2~0.3mm 的纸片再插，多半能恢复。';
+			} else {
+				msg.textContent = '❌ 卡在位但初始化失败（CME ' + (d.cerr || '?') + '）。' +
+					'通常也是触点接触不良；可先清洁触点重试，若换一张卡能读则问题在这张卡上。';
+			}
+			if (reload) setTimeout(reload, 2500);
+		}).catch(function(e) {
+			btn.disabled = false;
+			msg.textContent = '❌ ' + e;
+		});
+	});
+	return E('div', { 'class': 'fzs-simfix' }, [ btn, msg ]);
+}
+
+function modemCard(m, reload) {
 	if (!m || !m.ok)
 		return E('div', { 'class': 'cbi-section fzs-card' }, [
 			E('h3', { 'class': 'fzs-card-h' }, [
@@ -172,7 +220,9 @@ function modemCard(m) {
 			]),
 			idRow('IMEI', m.imei),
 			idRow('ICCID', m.iccid),
-			idRow('IMSI', m.imsi)
+			idRow('IMSI', m.imsi),
+			// 读不到卡才出现的一键重试（卡片自带轮询，正常时不占版面）
+			(!m.iccid && !m.imsi) ? simFixRow(m, reload) : ''
 		])
 	]);
 }
@@ -235,7 +285,9 @@ function showAbout(ver) {
 
 return view.extend({
 	load: function() {
-		L.env.rpctimeout = 60;
+		// 120 秒：除了常规 info，还要容纳「重新初始化 SIM」（CFUN 循环 + 轮询读卡，
+		// 最坏 3 + 6×5 秒，再加 AT 会话重试）—— 60 秒会在最坏情况下被前端掐断。
+		L.env.rpctimeout = 120;
 		return null;
 	},
 
@@ -246,7 +298,7 @@ return view.extend({
 		var stamp = E('span', {}, '读取中…');
 
 		function setCard(i, m) {
-			grid.replaceChild(modemCard(m), grid.children[i]);
+			grid.replaceChild(modemCard(m, reload), grid.children[i]);
 		}
 
 		function reload() {
