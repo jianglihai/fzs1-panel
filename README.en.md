@@ -23,8 +23,10 @@
 > ⚠️ **Read the [Disclaimer](#disclaimer) before use.** This project involves changing the IMEI, which is
 > legally restricted in most countries/regions. Use it only on hardware you legally own.
 
-> 📦 **Download the panel (.ipk)**: [Releases page](../../releases/latest) → pick the latest release →
-> download the `luci-app-fzs_*.ipk` asset.
+> 📦 **Download (.ipk)**: [Releases page](../../releases/latest) → pick the latest release → download
+> `luci-app-fzs_*.ipk` (panel) and `imsengine_*.ipk` (engine) — **panel first, engine second**.
+> The `fzs-ims-suite-*.tar.gz` on the same page is a **system restore bundle**, not a third plugin:
+> it unpacks a file tree and is uploaded through LuCI → System → Backup/Flash Firmware → **Restore backup**.
 
 > 💚 **This project is completely free and open source. No paid content whatsoever.**
 > We do not sell devices, services, "pro" versions, donations or promotions.
