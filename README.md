@@ -196,20 +196,40 @@ bash build-all.sh 0.3.7 0.1.20    # 指定面板版本 / 引擎版本
 
 ---
 
-## 安装（3 步，全在网页上）
+## 安装（4 步，全在网页上）
 
-1. 到本仓库的 **[Releases 页面](../../releases/latest)** 下载最新版 **`luci-app-fzs_<版本>_all.ipk`**
-   （也可以用直链 `https://github.com/zzt718/fzs1-panel/releases/latest`，一步到位）；
-2. 浏览器打开 LuCI 后台 → **系统 → 软件包** → 页面上方「**上传软件包…**」→ 选中该 ipk → 点「**安装**」；
-3. ⚠️ **装完后请「退出登录」，再用账号重新登录一次** ——
+本仓库现在交付**两个包**（面板 + IMS 引擎），**必须两个都装、先面板后引擎**
+（只装面板时，面板检测不到引擎会把「IMS 通道」选项主动隐藏，这是设计如此）。
+
+1. 到本仓库的 **[Releases 页面](../../releases/latest)** 下载最新版的
+   **`luci-app-fzs_<版本>_all.ipk`**（面板）和 **`imsengine_<版本>_mipsel_24kc.ipk`**（引擎）
+   （直链：`https://github.com/jianglihai/fzs1-panel/releases/latest`）；
+2. 浏览器打开 LuCI 后台 → **系统 → 软件包** → 页面上方「**上传软件包…**」→
+   **先装面板，再装引擎**（两个都装完再往下走）；
+3. **服务 → 终端**（或 `http://设备IP:7681`）用 root 登录，**一次粘一条、等提示符回来再粘下一条**：
+
+   ```sh
+   /etc/init.d/rpcd restart                                 # 让 ACL 与菜单生效
+   /etc/init.d/ims enable && /etc/init.d/ims restart        # IMS 引擎开机自启 + 立即拉起
+   /etc/init.d/fzs-sms enable && /etc/init.d/fzs-sms restart # 短信/面板后端自启 + 重启
+   ```
+
+   > 三条都是**幂等**的，重复执行没有副作用。本机实测（`0.3.7` / `0.1.20`）：
+   > 第 1 条约 1 s、第 2 条约 5 s、第 3 条约 1 s，全部返回 0。
+   > 第 1 条不跑会出现「装好了但面板没数据 / 菜单不出现」。
+
+4. ⚠️ **「退出登录」后再用账号重新登录一次** ——
    LuCI 的菜单是**登录时**生成的，**刚装完不退出重进是看不到新菜单的**（很多人在这一步以为没装上）。
-   重新登录后，左侧菜单「服务」分组下就会出现「**蜂助手面板**」。
+   重新登录后，左侧「服务」分组下会出现「**蜂助手面板**」。
 
-> 命令行也可以用：`opkg install /tmp/luci-app-fzs_xxx_all.ipk`（零依赖，可离线安装）。
+> 命令行也可以用：`opkg install luci-app-fzs_*.ipk imsengine_*.ipk`（零依赖，可离线安装）。
+
+> 可选第 4 条：`/etc/init.d/fzs-simretry enable` —— 开机读卡自愈（面板包安装时已自动 enable，
+> 这条只是核对）。**不要执行 `start`**，它是开机任务，手动跑一遍约 2 分钟且会占用 AT 口。
 
 ### 卸载
 
-**系统 → 软件包 → 找到 `luci-app-fzs` → 移除**。
+**系统 → 软件包 → 找到 `luci-app-fzs` / `imsengine` → 移除**（两个包互不锁定，先卸哪个都行）。
 短信数据在 `/etc/fzs-sms/`、配置在 `/etc/config/fzs-sms`，**卸载不会自动删**（需彻底清理时手动删这两处）。
 
 ### 升级会丢数据吗？——不会
