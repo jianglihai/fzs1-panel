@@ -32,7 +32,9 @@ IMEI 与锁频/锁小区功能 —— **均为原作者 [@zzt718](https://github
 | `0.3.2-1` | 修复 OpenWrt 23.05 上面板 **全部 AT 交互失效**：rpcd `file.c:812` 的 `if (sid && env) return PERMISSION_DENIED` 发生在任何 ACL 检查之前，而 LuCI 的 `fs.exec()` 必然带 `env` 键。改用只声明 `['command','params']` 的 `fzsexec` 模块绕开，共替换 7 个页面 28 处调用 |
 | `0.3.2-1` | `build_ipk.py`：`control`/`postinst` 打包前统一 CRLF→LF（否则设备上 ash 报 `line 3: { : not found`，服务起不来） |
 | `0.3.5` | 读卡自愈：面板概览页「重新初始化 SIM」按钮 + `fzs-at sim status/reset` + 开机自愈服务 `fzs-simretry`（模组 `QSIMDET=0,0` 导致开机握手失败就永久无卡，这层把它变成"过一会儿自己好了"） |
-| 当前 | `fzs-at` 保留 IMS 原生栈旁路能力：`native_ims_target` / `cmd_ims_native` / `cmd_ims_learn`（P-CSCF 自学习），未装 imsengine 时自动回退原生 CS 域 |
+| `0.3.7` | **AT 口一律动态发现**：新增 `probe_at()` —— 真的发一条 `AT`、必须回 `OK` 才认这个口（结果缓存 60 s）。原逻辑把 USB 接口 `:1.4` 写死当 AT 口，而那是 Quectel 的 PPP/modem 口、被 `pppd` 独占，`open()` 直接 `EAGAIN`；换卡槽触发 USB 重枚举、ttyUSB 编号整体平移后就表现为「模组无响应 / 发不了短信」。代码中已无任何写死的 ttyUSB 编号 |
+| `0.3.7` | `fzs-at` 保留 IMS 原生栈旁路能力：`native_ims_target` / `cmd_ims_native` / `cmd_ims_learn`（P-CSCF 自学习），未装 imsengine 时自动回退原生 CS 域 |
+| `0.1.20` | 引擎新增 `ims-atport`（唯一的动态端口枚举器：sysfs `idProduct` + 接口号 `>= :1.3`，`:1.4` 优先）与 `ims-submit`（文件交互式发短信，**完全绕开 `rc.common` 的 `procd_lock`**，修掉发短信无限卡死）；`native_self_detect` / 诊断段 / `ims-data` 全部改走 `ims-atport`；修掉 `start_bypass_watch` 吊住 procd 管道 + 子 shell 抢父进程锁造成的自锁；postinst 不再同步调 `restart`，opkg 安装不再阻塞 |
 
 > 上述任何问题**均由本副本的改动负责**，请不要反馈到原作者那里。
 > 若想参与这个面板本身的开发，请直接到 **[zzt718/fzs1-panel](https://github.com/zzt718/fzs1-panel)** —— 那里才是它的家。
@@ -61,7 +63,7 @@ fzs1-panel/
 
 ```bash
 bash build-all.sh                 # 面板 + 引擎，两个 ipk 一次出
-bash build-all.sh 0.3.6 0.1.14    # 指定面板版本 / 引擎版本
+bash build-all.sh 0.3.7 0.1.20    # 指定面板版本 / 引擎版本
 ```
 
 设备端安装**必须两个包一起装**（先面板、后引擎），只装面板会看不到 IMS 入口 ——
@@ -85,7 +87,8 @@ bash build-all.sh 0.3.6 0.1.14    # 指定面板版本 / 引擎版本
 
 > ⚠️ **使用前请务必阅读 [免责声明](#免责声明)。本项目涉及修改 IMEI，在多数国家和地区受法律管制，仅限对你本人合法拥有的设备使用。**
 
-> 📦 **下载面板（.ipk）**：[Releases 页面](../../releases/latest) → 选最新版 → 下载 `luci-app-fzs_*.ipk` 附件。
+> 📦 **下载（.ipk）**：[Releases 页面](../../releases/latest) → 选最新版 → 下载 `luci-app-fzs_*.ipk`（面板）
+> 与 `imsengine_*.ipk`（引擎）两个附件，**先装面板、再装引擎**。整合包 `fzs-ims-suite-*.tar.gz` 里两个都有。
 
 > 💚 **本项目完全免费、开源，没有任何收费内容。** 不卖设备、不卖服务、不提供付费版、不接任何打赏或推广。
 > 如果你是在**花钱**买到它，**你被坑了**——请立即要求退款，并欢迎到仓库 Issue 举报。详见 [关于免费](#关于免费)。
