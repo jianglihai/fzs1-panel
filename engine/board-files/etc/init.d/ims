@@ -128,6 +128,13 @@ start_bypass_watch() {
 	#     rc.common 执行任何子命令前都要拿 procd_lock，而此刻这把锁正被父进程
 	#     `start` 持有 → 子进程直接卡在 flock 上（自己等自己，永久死锁）。
 	#     fzs-at 不经过 rc.common，不受这把锁影响。
+	#
+	#  ③ 2026-10-30 再补一条（真机复现：`start` 明明返回了，之后 `ims running`、
+	#     `mwan3 status` 全卡死）：后台子 shell 会**继承 fd 1000**，也就是 rc.common
+	#     持有的 /tmp/lock/procd_ims.lock。flock 的锁跟着这个打开文件描述走 ——
+	#     父 shell 退出不会释放，只要这个后台子 shell 还活着，锁就永远被占着，
+	#     所有 init.d 子命令排队等死（症状：整个网页终端不动、面板 init.d 操作全无响应）。
+	#     解法：在子 shell 里把 fd 1000 关掉 → 锁随最后一个引用消失而释放。
 	{
 		i=0
 		while [ $i -lt 30 ]; do          # 最多守 5 分钟（30 × 10s）
@@ -141,7 +148,7 @@ start_bypass_watch() {
 			/etc/init.d/ims restart >/dev/null 2>&1
 			break
 		done
-	} >/dev/null 2>&1 &
+	} 1000>&- 9>&- >/dev/null 2>&1 &
 }
 
 start_data_only() {

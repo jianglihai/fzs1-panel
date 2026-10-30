@@ -7,7 +7,7 @@
       fzs1-panel\build\packages\          ← 跑过 bash build-all.sh 之后产物在这里
     （2026-10-25 起面板与引擎同仓维护，原 fzs1-openwrt-ims 固件仓库已停用）
 
-  ★ 当前版本：imsengine 0.1.20-1  /  luci-app-fzs 0.3.7-1
+  ★ 当前版本：imsengine 0.1.21-1  /  luci-app-fzs 0.3.7-1
     （0.1.20 / 0.3.7 修复：换卡槽/换模组后面板报「模组无响应」、短信发不出去
       —— 根因是 AT 口按 ttyUSB 编号写死，现改为 sysfs 动态发现 + 实测探测。
       详见文末「0.1.20 / 0.3.7 更新记录」）
@@ -62,7 +62,7 @@
     │ 序 │ 文件名                                 │   大小   │  sha256 尾 │
     ├────┼────────────────────────────────────────┼──────────┼────────────┤
     │ 1  │ luci-app-fzs_0.3.7-1_all.ipk           │  119 KB  │  见 sha256sums │
-    │ 2  │ imsengine_0.1.20-1_mipsel_24kc.ipk     │ 1299 KB  │  见 sha256sums │
+    │ 2  │ imsengine_0.1.21-1_mipsel_24kc.ipk     │ 1299 KB  │  见 sha256sums │
     └────┴────────────────────────────────────────┴──────────┴────────────┘
 
   ★ 文件名注意：面板包从 0.3.5 起带 release 号（现为 0.3.7-1）。
@@ -146,17 +146,18 @@
               ping 223.5.5.5   → 0% packet loss（60ms）
       即：这三条在新版上行为与旧版完全一致，不需要改写成新命令。
 
-  ── 复测记录（2026-10-30，设备 imsengine 0.1.20-1 / fzs 0.3.7-1）──
+  ── 复测记录（2026-10-30，设备 imsengine 0.1.21-1 / fzs 0.3.7-1）──
       第 1 条  /etc/init.d/rpcd restart                → exit=0，约 1s
       第 2 条  /etc/init.d/ims enable / restart        → exit=0，约 5s（不再卡死）
       第 3 条  /etc/init.d/fzs-sms enable / restart    → exit=0，约 1s
       执行后  pidof imsengine → 16259   pidof fzs-smsd → 24243
       /etc/init.d/ims enabled     → enabled
       /etc/init.d/fzs-sms enabled → enabled
-      ★ 0.1.20 特别说明：旧版第 2 条曾因 procd_lock 争用卡住数分钟（表现为整个
-        网页终端不动、init.d 全部无响应）。0.1.20 修掉 start_bypass_watch 的自锁后
-        已恢复正常，5 秒内返回。若仍遇到卡住，见后面「出问题怎么办」里的
-        「命令敲下去一直不返回」。
+      ★ 0.1.21 特别说明：0.1.20 之前的版本第 2 条会卡住数分钟（网页终端不动、
+        init.d 全部无响应）。0.1.20 修掉子 shell 抢锁，0.1.21 又修掉子 shell
+        继承 fd 1000 导致锁永不释放 —— 现已实测 restart 2 秒返回、随后
+        `ims running` 与 `mwan3 status` 均 1 秒内响应。若仍遇到卡住，见后面
+        「出问题怎么办」里的「命令敲下去一直不返回」。
 
 
 【第 4 步】验证装好了没有
@@ -215,7 +216,8 @@
   Q：命令敲下去一直不返回，整个网页终端像死了一样？
      A：这是 rc.common 的 procd_lock 被某个卡住的 /etc/init.d/ims 进程占住了，
         所有 init.d 子命令都会排队（不是你的操作有错）。
-        0.1.20 已修掉造成这件事的 start_bypass_watch 自锁，正常情况下不会再发生。
+        0.1.20 / 0.1.21 已修掉造成这件事的两处原因（子 shell 抢锁、子 shell 继承
+        锁的 fd 1000），正常情况下不会再发生。
         万一还是遇到，开一个新的网页终端（或 SSH）敲这一条清掉：
             kill -9 $(ps w | grep 'rc.common /etc/init.d/ims' | grep -v grep | awk '{print $1}')
         然后重跑第 2 条。★ 注意：发短信、读卡、上网这些功能全部绕开了 rc.common，
@@ -527,3 +529,50 @@
   · 如果发现 /etc/init.d/ims start 卡住不动（OpenWrt 框架层的服务锁竞争），
     不影响面板收发短信与读卡；清理办法：
         for p in $(ps | grep -E "rc.common /etc/init.d/ims" | grep -v grep | awk '{print $1}'); do kill -9 $p; done
+
+================================================================================
+  ★ 0.1.21 补丁（2026-10-30 19:5x，修「start 返回了但其它 init.d 全卡死」）
+================================================================================
+
+【现象】
+  跑完第 3 步三条命令，表面一切正常（start/restart 都返回了），
+  但接下来：
+    · 再敲 /etc/init.d/ims running      → 永远不动
+    · 敲 /etc/init.d/mwan3 status        → 一样不动
+    · 网页终端像死了，面板里 init.d 相关操作全无响应
+    · 更糟：升级装包时 opkg 卡在 prerm 的 ims stop 上，一半装完
+
+【根因（真机用 /proc/<pid>/fd 定位）】
+  卡住的是 start_bypass_watch 派出的后台守望子 shell。
+  它的 cmdline 与父进程一模一样（也是 "/bin/sh /etc/rc.common /etc/init.d/ims start"），
+  所以 ps 里看起来像 start 没退出 —— 其实是那个子 shell 还活着，且：
+
+      /proc/<子shell pid>/fd/1000 -> /tmp/lock/procd_ims.lock
+
+  也就是说它**继承了 rc.common 的锁文件描述符**。flock 的锁归属于「打开文件描述」，
+  父 shell 退出并不会释放，只要还有任何进程攥着这个 fd，锁就一直被占。
+  于是后续每条 init.d 子命令都排在 flock 上等死（mwan3 status 也被殃及，
+  因为它是同一把 procd_lock）。
+
+  为什么 0.1.20 没修掉：0.1.20 只解决了「子 shell 吊住 procd 管道」和
+  「子 shell 去抢父进程的锁」两件事，没意识到**继承 fd 等于一直持锁**。
+
+【修法（一行重定向）】
+      } 1000>&- 9>&- >/dev/null 2>&1 &
+
+  在子 shell 里把 fd 1000 关掉 → 锁随最后一个引用消失而释放。
+  守望进程本身照常跑（该切旁路还是会切），只是不再攥着锁。
+
+【验证（0.1.21，实测）】
+  /etc/init.d/ims start     → 4s 返回
+  /etc/init.d/ims restart   → 2s 返回
+  /etc/init.d/ims running   → 1s（此前必卡死）
+  /etc/init.d/mwan3 status  → 1s（此前必卡死）
+  /proc/*/fd 里已无进程持有 procd_ims.lock
+  ims status → {"state":"已注册","detail":"ims 注册成功",…}
+  sms send   → {"ok":true,"chunks":1}
+
+【升级说明】
+  已经装 0.1.20 的用户建议升到 0.1.21；只装 0.1.20 也能用（短信/上网/读卡都正常），
+  但每次跑 init.d 有可能把锁留在后台，久了会累积，表现为"面板越用越卡"。
+  升级命令：opkg install imsengine_0.1.21-1_mipsel_24kc.ipk

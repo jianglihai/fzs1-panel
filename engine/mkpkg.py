@@ -44,7 +44,7 @@ OUT = os.environ.get("FZS_PKG_OUT", os.path.join(ROOT, "build", "packages"))
 # ---------------------------------------------------------------------------
 # IMS 引擎与面板同仓维护；面板 ipk 默认就地取材（src/dist），也可指定本地文件或
 # 从 Release 下载（兼容"先只更新一面"的场景）。
-ENGINE_VER, ENGINE_REL, ENGINE_ARCH = "0.1.20", "1", "mipsel_24kc"
+ENGINE_VER, ENGINE_REL, ENGINE_ARCH = "0.1.21", "1", "mipsel_24kc"
 PANEL_VER, PANEL_REL, PANEL_ARCH = "0.3.7", "1", "all"
 PANEL_REPO = os.environ.get("FZS_PANEL_REPO", "jianglihai/fzs1-panel")
 SUITE_VER = ENGINE_VER

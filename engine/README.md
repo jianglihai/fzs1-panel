@@ -38,7 +38,7 @@ engine/
 ```bash
 # 一条命令出两个包（先面板后引擎）
 bash build-all.sh                 # 用默认版本
-bash build-all.sh 0.3.7 0.1.20    # 面板版本、引擎版本
+bash build-all.sh 0.3.7 0.1.21    # 面板版本、引擎版本
 
 # 只重打引擎包（面板已经打好、或只改引擎时）
 python3 engine/mkpkg.py
@@ -72,6 +72,7 @@ bash engine/build-engine.sh
 
 | 引擎版本 | 内容 |
 | --- | --- |
+| `0.1.21` | **修掉最后一个锁坑**：`start_bypass_watch` 的后台子 shell 会继承 rc.common 的 `fd 1000`（`/tmp/lock/procd_ims.lock`）。flock 跟着这个打开文件描述走，父 shell 退出不释放 —— 只要守望进程活着锁就永远被占，于是 `ims start` 明明返回了，后续 `ims running`、`mwan3 status` 全部永久卡死（症状：网页终端不动、面板 init.d 操作无响应，opkg 安装也会卡在 prerm 的 `ims stop`）。改为在子 shell 里 `1000>&-`：锁随最后一个引用消失而释放 |
 | `0.1.20` | **AT 口一律动态发现**：新增 `ims-atport`（按 sysfs `idProduct` + 接口号 `>= :1.3` 枚举，`:1.4` 优先）与 `ims-submit`（文件交互式发短信，绕开 `rc.common` 的 `procd_lock`，修掉发短信无限卡死）；`native_self_detect` / 诊断段 / `ims-data` 全部改走 `ims-atport`；修掉 `start_bypass_watch` 吊住 procd 管道 + 子 shell 抢父进程锁造成的自锁；postinst 不再同步调 `restart`，opkg 不再阻塞 |
 | `0.1.13` | 随面板 0.3.5 发布；`sim` 子命令（读卡状态/重新初始化）、开机读卡自愈 `fzs-simretry`（面板包内） |
 | `0.1.12` | 修「升级后新功能消失」（prerm 不再在 upgrade 时还原面板文件）、`ims diag` AT 探测改写 + watchdog 重定向 |

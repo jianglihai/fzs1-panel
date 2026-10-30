@@ -510,6 +510,7 @@ What this copy adds on top of his work (everything else is untouched original):
 | `0.3.5` | SIM self-heal: "Re-initialise SIM" button on the overview page, `fzs-at sim status/reset`, and a boot-time retry service (`fzs-simretry`) — modules ship with `QSIMDET=0,0`, so a failed SIM handshake at boot leaves them permanently card-less |
 | `0.3.7` | **AT ports are now discovered dynamically**: new `probe_at()` actually sends `AT` and requires `OK` before trusting a port (cached 60 s). Previously USB interface `:1.4` was hardcoded as the AT port — that is Quectel's PPP/modem port, held exclusively by `pppd`, so `open()` returned `EAGAIN`. Moving the SIM to the other slot triggered USB re-enumeration and shifted every `ttyUSB` number, surfacing as "module not responding / SMS won't send". No hardcoded `ttyUSB` numbers remain |
 | `0.3.7` | Keeps the IMS native-stack bypass in `fzs-at`: `native_ims_target` / `cmd_ims_native` / `cmd_ims_learn` (P-CSCF auto-learning), falling back to native CS domain when `imsengine` is absent |
+| `0.1.21` | **Fixed the last lock leak**: `start_bypass_watch`'s background subshell inherited rc.common's `fd 1000` (`/tmp/lock/procd_ims.lock`). flock follows that open file description, so the parent exiting did not release it — as long as the watcher lived, the lock stayed held, and `ims start` returned while every later `ims running` / `mwan3 status` hung forever (symptom: dead web terminal, panel init.d calls unresponsive, opkg stuck in prerm's `ims stop`). Fixed by `1000>&-` in the subshell, so the lock drops with the last reference |
 | `0.1.20` | Engine adds `ims-atport` (single dynamic port enumerator: sysfs `idProduct` + interface `>= :1.3`, `:1.4` tried first) and `ims-submit` (file-based SMS submission that **bypasses `rc.common`'s `procd_lock`**, fixing the indefinite SMS hang); `native_self_detect` / diagnostics / `ims-data` all go through `ims-atport`; fixed `start_bypass_watch` holding procd's pipe open and deadlocking on the parent's own lock; postinst no longer calls `restart`, so `opkg` stops blocking |
 
 ### Repository layout (panel + IMS engine, merged)
@@ -528,7 +529,7 @@ fzs1-panel/
 
 ```bash
 bash build-all.sh                 # panel + engine
-bash build-all.sh 0.3.7 0.1.20    # panel version, engine version
+bash build-all.sh 0.3.7 0.1.21    # panel version, engine version
 ```
 
 Both packages must be installed together (panel first, engine second); a panel without

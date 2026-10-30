@@ -34,6 +34,7 @@ IMEI 与锁频/锁小区功能 —— **均为原作者 [@zzt718](https://github
 | `0.3.5` | 读卡自愈：面板概览页「重新初始化 SIM」按钮 + `fzs-at sim status/reset` + 开机自愈服务 `fzs-simretry`（模组 `QSIMDET=0,0` 导致开机握手失败就永久无卡，这层把它变成"过一会儿自己好了"） |
 | `0.3.7` | **AT 口一律动态发现**：新增 `probe_at()` —— 真的发一条 `AT`、必须回 `OK` 才认这个口（结果缓存 60 s）。原逻辑把 USB 接口 `:1.4` 写死当 AT 口，而那是 Quectel 的 PPP/modem 口、被 `pppd` 独占，`open()` 直接 `EAGAIN`；换卡槽触发 USB 重枚举、ttyUSB 编号整体平移后就表现为「模组无响应 / 发不了短信」。代码中已无任何写死的 ttyUSB 编号 |
 | `0.3.7` | `fzs-at` 保留 IMS 原生栈旁路能力：`native_ims_target` / `cmd_ims_native` / `cmd_ims_learn`（P-CSCF 自学习），未装 imsengine 时自动回退原生 CS 域 |
+| `0.1.21` | **修掉最后一个锁坑**：`start_bypass_watch` 的后台子 shell 会继承 rc.common 的 `fd 1000`（`/tmp/lock/procd_ims.lock`）。flock 跟着这个打开文件描述走，父 shell 退出不释放 —— 只要守望进程活着锁就永远被占，于是 `ims start` 明明返回了，后续 `ims running`、`mwan3 status` 全部永久卡死（症状：网页终端不动、面板 init.d 操作无响应，opkg 安装也会卡在 prerm 的 `ims stop`）。改为在子 shell 里 `1000>&-`：锁随最后一个引用消失而释放 |
 | `0.1.20` | 引擎新增 `ims-atport`（唯一的动态端口枚举器：sysfs `idProduct` + 接口号 `>= :1.3`，`:1.4` 优先）与 `ims-submit`（文件交互式发短信，**完全绕开 `rc.common` 的 `procd_lock`**，修掉发短信无限卡死）；`native_self_detect` / 诊断段 / `ims-data` 全部改走 `ims-atport`；修掉 `start_bypass_watch` 吊住 procd 管道 + 子 shell 抢父进程锁造成的自锁；postinst 不再同步调 `restart`，opkg 安装不再阻塞 |
 
 > 上述任何问题**均由本副本的改动负责**，请不要反馈到原作者那里。
@@ -63,7 +64,7 @@ fzs1-panel/
 
 ```bash
 bash build-all.sh                 # 面板 + 引擎，两个 ipk 一次出
-bash build-all.sh 0.3.7 0.1.20    # 指定面板版本 / 引擎版本
+bash build-all.sh 0.3.7 0.1.21    # 指定面板版本 / 引擎版本
 ```
 
 设备端安装**必须两个包一起装**（先面板、后引擎），只装面板会看不到 IMS 入口 ——
@@ -214,8 +215,8 @@ bash build-all.sh 0.3.7 0.1.20    # 指定面板版本 / 引擎版本
    /etc/init.d/fzs-sms enable && /etc/init.d/fzs-sms restart # 短信/面板后端自启 + 重启
    ```
 
-   > 三条都是**幂等**的，重复执行没有副作用。本机实测（`0.3.7` / `0.1.20`）：
-   > 第 1 条约 1 s、第 2 条约 5 s、第 3 条约 1 s，全部返回 0。
+   > 三条都是**幂等**的，重复执行没有副作用。本机实测（`0.3.7` / `0.1.21`）：
+   > 第 1 条约 1 s、第 2 条约 2–5 s、第 3 条约 1 s，全部返回 0。
    > 第 1 条不跑会出现「装好了但面板没数据 / 菜单不出现」。
 
 4. ⚠️ **「退出登录」后再用账号重新登录一次** ——
