@@ -34,41 +34,17 @@ patch_fzs() {
 # ---------- IMS 短信提交（fzs-at 的 ims 分支调用） ----------
 # 用法: ims submit <号码> <内容>  （同步等待引擎发送结果, 上限 20s）
 submit_sms() {
-	local num="$1" txt="$2" id i res st
-	[ -n "$num" ] || { echo "号码为空" >&2; return 1; }
-	[ -n "$txt" ] || { echo "内容为空" >&2; return 1; }
-	# IMS 未注册直接拒（避免把用户短信堆到队列里无人问津）
-	# ★ 0.1.8 [lease-info]: 旁路态的 STATE 是「原生 IMS 已注册（旁路）」，
-	#   旧写法 `grep -q "STATE='已注册'"` 是**精确匹配**，会把"已经注册成功"
-	#   误判成未注册直接拒发（旁路时 native_ims_target 临时探测失败就会踩到）。
-	#   改为包含式匹配：已注册 / 原生 IMS 已注册（旁路）都算已注册。
-	if ! grep -q "STATE='[^']*已注册" /tmp/ims_status.txt 2>/dev/null; then
-		st=$(sed -n "s/^STATE='\(.*\)'/\1/p" /tmp/ims_status.txt 2>/dev/null)
-		echo "IMS 未注册（当前状态: ${st:-引擎未运行}），短信未发出。请等 IMS 注册成功后再试" >&2
-		return 1
+	# 实际逻辑在 /usr/libexec/ims-submit。
+	# 拆成独立脚本的原因见该脚本头注释：rc.common 执行任何子命令前都会先拿
+	# procd_lock，而 start_service 探测 IMS 端口要遍历 6 个串口（最坏 45s+），
+	# 整个 start 期间都持锁 → 这期间调 submit 会卡在 flock 上无限阻塞
+	# （2026-10-30 现场实测：卡死 4 分钟，面板一直转圈，短信发不出去）。
+	# 发短信只是投递请求文件，没必要和服务启停串行。
+	if [ -x /usr/libexec/ims-submit ]; then
+		/usr/libexec/ims-submit "$1" "$2"
+		return $?
 	fi
-	mkdir -p "$REQ_DIR"
-	id="$(date +%s)-$$"
-	printf '%s\n' "$num" > "$REQ_DIR/.req.$id.tmp"
-	printf '%s' "$txt" >> "$REQ_DIR/.req.$id.tmp"
-	mv "$REQ_DIR/.req.$id.tmp" "$REQ_DIR/req-$id.txt"
-	i=0
-	while [ $i -lt 20 ]; do   # 20 × 1s = 20s（busybox sleep 不支持小数; 网关应答本就 5~10s）
-		if [ -f "$REQ_DIR/req-$id.done" ]; then
-			res=$(cat "$REQ_DIR/req-$id.done" 2>/dev/null)
-			rm -f "$REQ_DIR/req-$id.done"
-			case "$res" in
-			ok)   return 0 ;;
-			err:*) echo "${res#err:}" >&2; return 1 ;;
-			*)     echo "引擎返回异常: $res" >&2; return 1 ;;
-			esac
-		fi
-		sleep 1
-		i=$((i + 1))
-	done
-	# 超时: 删掉请求（引擎可能正重启, 恢复后补发会造成"以为没发却发了"）
-	rm -f "$REQ_DIR/req-$id.txt" "$REQ_DIR/req-$id.done"
-	echo "IMS 引擎 20s 无响应，短信未发出（请求已撤回）" >&2
+	echo "缺少 /usr/libexec/ims-submit（引擎包不完整），请重装 imsengine" >&2
 	return 1
 }
 
@@ -97,17 +73,28 @@ native_self_detect() {
 	done
 	[ -n "$ATIO" ] || return 1
 	mkdir -p /tmp/ims-native 2>/dev/null
-	# 顺序: 先试各模组的"主 AT 口"(2/5), 再退其它口
-	for p in /dev/ttyUSB2 /dev/ttyUSB5 /dev/ttyUSB1 /dev/ttyUSB4 /dev/ttyUSB0 /dev/ttyUSB3; do
+	# ★★★ 2026-10-30 收敛探测范围与超时（这处曾导致 ims start 卡死 5 分钟）★★★
+	#   原实现扫 6 个口 × `-t 2500` × 内部 3 次重试 → 最坏 45s 以上。
+	#   而 start_service 整个过程都持有 /var/lock/procd_ims.lock：
+	#   期间 procd 的 `running` 校验、面板的 submit/restart 全部卡在 flock 上
+	#   （实机现象：`ims start` 一直不返回，面板发短信永久转圈）。
+	#   现在：候选口**完全动态**取自 /usr/libexec/ims-atport（按 sysfs 的
+	#   idProduct + 接口号枚举，:1.4 → :1.3 排序，跳过 RNDIS/DM 口），
+	#   单次超时降到 900ms（模组正常应答 <100ms，900ms 足够），
+	#   最坏 4 × 900 × 3 ≈ 11s，常见路径 2~3s 就出结果。
+	#   ★ 不要再写 /dev/ttyUSB0..5 这种固定编号：USB 每次重枚举编号都会平移，
+	#     2026-10-30 的事故就是按编号/接口号写死取口导致的（见 ims-atport 头注释）。
+	for p in $(/usr/libexec/ims-atport 2>/dev/null || ls /dev/ttyUSB* 2>/dev/null); do
 		[ -c "$p" ] || continue
 		printf 'AT+CPIN?\r\nAT+CIREG?\r\n' > /tmp/ims-native/q 2>/dev/null
-		"$ATIO" -t 2500 -b /tmp/ims-native/q "$p" /tmp/ims-native/o >/dev/null 2>&1
+		"$ATIO" -t 900 -b /tmp/ims-native/q "$p" /tmp/ims-native/o >/dev/null 2>&1
 		out=$(tr -d '\r' < /tmp/ims-native/o 2>/dev/null)
 		case "$out" in *READY*) ;; *) continue ;; esac
 		st=$(printf '%s\n' "$out" | sed -n 's/^+CIREG: *[0-9]*,\([0-9]*\).*$/\1/p' | head -1)
 		[ "$st" = "1" ] || continue
 		# 与 fzs-at ims native 的取值口径一致：只输出 AT 口路径
-		# （ttyUSB0/1/2 = 模组1 EC200T；ttyUSB3/4/5 = 模组2 EC200N，与本机 USB 拓扑一致）
+		# （★ 不再假设 ttyUSB 编号与模组的对应关系 —— 每次 USB 重枚举都会平移，
+		#   只按 sysfs 的 idProduct 认模组，由 ims-atport 给出候选顺序）
 		echo "$p"
 		return 0
 	done
@@ -129,20 +116,32 @@ native() {
 #         自动 restart 本服务, 让 start_service 重新探测并正确进入旁路。
 #   注: 引擎只占 ttyUSB4; 自包含探测优先命中 ttyUSB5/ttyUSB2, 不冲突。
 start_bypass_watch() {
+	# ★★★ 2026-10-30 修两处致命问题（真机实测 start 卡死 5 分钟以上）★★★
+	#
+	#  ① 整个后台块必须重定向输出。
+	#     它继承了 start_service 的 stdout，而那是 procd 的管道：
+	#     不重定向 → procd_close_instance 一直等管道关闭 → `/etc/init.d/ims start`
+	#     永不返回，并**全程占着 /var/lock/procd_ims.lock**。
+	#     （同一类坑在 0.1.12 的 `ims diag` watchdog 上踩过，那里加的是 >/dev/null 2>&1）
+	#
+	#  ② 子 shell 里不能调 `/etc/init.d/ims native`，要调 `/usr/libexec/fzs-at ims native`。
+	#     rc.common 执行任何子命令前都要拿 procd_lock，而此刻这把锁正被父进程
+	#     `start` 持有 → 子进程直接卡在 flock 上（自己等自己，永久死锁）。
+	#     fzs-at 不经过 rc.common，不受这把锁影响。
 	{
 		i=0
 		while [ $i -lt 30 ]; do          # 最多守 5 分钟（30 × 10s）
 			sleep 10
 			i=$((i + 1))
 			grep -q '旁路' /tmp/ims_status.txt 2>/dev/null && break
-			_n=$(/etc/init.d/ims native 2>/dev/null)
+			_n=$(/usr/libexec/fzs-at ims native 2>/dev/null | awk '{print $2; exit}')
 			[ -n "$_n" ] || continue
 			grep -qE '注册失败|绑卡失败|ERROR' /tmp/ims_status.txt 2>/dev/null || continue
 			logger -t ims "[bypass-watch] 原生 IMS 已注册($_n)，而引擎注册失败 → 重启服务切旁路"
 			/etc/init.d/ims restart >/dev/null 2>&1
 			break
 		done
-	} &
+	} >/dev/null 2>&1 &
 }
 
 start_data_only() {
@@ -325,7 +324,8 @@ diag() {
 		[ -x "$_b" ] && { _ATIO="$_b"; break; }
 	done
 	if [ -n "$_ATIO" ]; then
-		for _p in /dev/ttyUSB2 /dev/ttyUSB5; do
+		# 候选口动态取自 ims-atport（不写死 ttyUSB 编号，见该脚本头注释）
+		for _p in $(/usr/libexec/ims-atport 2>/dev/null || ls /dev/ttyUSB* 2>/dev/null); do
 			[ -c "$_p" ] || continue
 			echo "  --- $_p ---"
 			_o=/tmp/.imsdiag.o

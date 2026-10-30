@@ -44,8 +44,8 @@ OUT = os.environ.get("FZS_PKG_OUT", os.path.join(ROOT, "build", "packages"))
 # ---------------------------------------------------------------------------
 # IMS 引擎与面板同仓维护；面板 ipk 默认就地取材（src/dist），也可指定本地文件或
 # 从 Release 下载（兼容"先只更新一面"的场景）。
-ENGINE_VER, ENGINE_REL, ENGINE_ARCH = "0.1.13", "1", "mipsel_24kc"
-PANEL_VER, PANEL_REL, PANEL_ARCH = "0.3.5", "1", "all"
+ENGINE_VER, ENGINE_REL, ENGINE_ARCH = "0.1.20", "1", "mipsel_24kc"
+PANEL_VER, PANEL_REL, PANEL_ARCH = "0.3.7", "1", "all"
 PANEL_REPO = os.environ.get("FZS_PANEL_REPO", "jianglihai/fzs1-panel")
 SUITE_VER = ENGINE_VER
 
@@ -58,6 +58,8 @@ ENGINE_FILES = [
     ("etc/config/ims",                             0o644),
     ("usr/libexec/ims-ppp",                        0o755),
     ("usr/libexec/ims-data",                       0o755),
+    ("usr/libexec/ims-submit",                     0o755),
+    ("usr/libexec/ims-atport",                     0o755),
     ("usr/lib/imsengine/patch-fzs",                0o755),
     ("usr/lib/imsengine/fzs-at.sms.snippet",       0o644),
     ("usr/lib/imsengine/fzs-at.ims.snippet",       0o644),
@@ -119,13 +121,49 @@ rm -f /tmp/luci-indexcache /tmp/luci-modulecache* 2>/dev/null
 
 /etc/init.d/ims enable
 /usr/lib/imsengine/patch-fzs
-# 升级场景 service 已在跑（restart 换掉旧进程）；
 # 全新安装时 running 为假，直接 restart 会向 ubus 打一条 \"Not found\"，故分支处理
-if /etc/init.d/ims running 2>/dev/null; then
-	/etc/init.d/ims restart
-else
-	/etc/init.d/ims start
-fi
+# ---- 启动服务（0.1.19 改成后台，不再阻塞 opkg）------------------------
+#
+# 以前这里是同步 restart|start，踩到一个会把设备彻底搞死的问题：
+# rc.common 执行任何子命令前都要拿 procd_lock(/tmp/lock/procd_ims.lock)，
+# 而安装过程中 procd 自己的 running 校验也会来拿同一把锁 —— 两者撞上时
+# 有一方会永久卡在 flock 1000。锁一旦被占住就再也不释放，
+# 之后所有 ims 子命令（submit/restart/status）全部堵死。
+# 2026-10-30 现场：/etc/init.d/ims start 卡了 5 分钟以上，
+# 面板发短信一直转圈发不出去（那时 submit 还没拆成独立脚本）。
+#
+# 现在的策略：
+#   ① 先清掉已被 init 收养（PPid=1）的 rc.common 孤儿进程 —— 它们只可能是
+#      上一次安装卡死留下的，会一直占着上面那把锁。父进程还在（正常执行中）的不碰。
+#   ② 启动放后台：服务由 procd 托管，本来就不需要 opkg 等它返回；
+#      后台跑即使偶发卡住，也不会拖住安装、不会让 opkg.lock 被继承住。
+for _d in /proc/[0-9]*; do
+	[ -r "$_d/cmdline" ] || continue
+	case "$(tr '\\0' ' ' < "$_d/cmdline" 2>/dev/null)" in
+	*"rc.common /etc/init.d/ims"*)
+		_pp=$(sed -n 's/^PPid:[[:space:]]*//p' "$_d/status" 2>/dev/null)
+		[ "$_pp" = "1" ] && kill -9 "${_d#/proc/}" 2>/dev/null
+		;;
+	esac
+done
+#   ③ 不用 init.d 起服务：实测 `start`/`restart` 都会在 procd 的
+#      running 校验上撞锁卡死（不是探测慢的问题，是框架层的竞争）。
+#      这里改为**直接让 procd 把旧进程换掉**：kill 掉 imsengine / ims-ppp，
+#      procd 按 init 脚本里声明的 `respawn 3600 5 5` 自动拉起新二进制。
+#      全程不碰 procd_ims.lock，升级后新引擎照样生效。
+for _n in imsengine; do
+	_pid=$(pidof "$_n" 2>/dev/null)
+	[ -n "$_pid" ] && kill "$_pid" 2>/dev/null
+done
+for _n in ims-ppp; do
+	for _p in /proc/[0-9]*; do
+		[ -r "$_p/cmdline" ] || continue
+		case "$(tr '\0' ' ' < "$_p/cmdline" 2>/dev/null)" in
+		*"/usr/libexec/ims-ppp"*) kill "${_p#/proc/}" 2>/dev/null ;;
+		esac
+	done
+done
+logger -t ims "imsengine 已升级，交给 procd respawn 拉起新进程"
 exit 0
 """
 
@@ -201,7 +239,9 @@ SUITE_EXCLUDE = {"./etc/config/fzs-sms"}
 # imsengine 的路径前缀（其余归面板），用于补登记脚本生成 opkg 的 .list
 ENGINE_PREFIXES = (
     "usr/bin/imsengine", "etc/init.d/ims", "etc/config/ims", "etc/operators/",
-    "usr/libexec/ims-ppp", "usr/libexec/ims-data", "usr/lib/imsengine/",
+    "usr/libexec/ims-ppp", "usr/libexec/ims-data", "usr/libexec/ims-submit",
+    "usr/libexec/ims-atport",
+    "usr/lib/imsengine/",
     "lib/upgrade/keep.d/imsengine",
 )
 
@@ -212,7 +252,8 @@ opkg list-installed 2>/dev/null | grep -Ei 'imsengine|luci-app-fzs' || echo "(op
 echo
 echo "===== 2. 关键文件 ====="
 for f in /usr/bin/imsengine /usr/libexec/ims-data /usr/libexec/ims-ppp \
-         /usr/lib/imsengine/patch-fzs /etc/init.d/ims /usr/libexec/fzs-at /usr/bin/fzs-atio; do
+         /usr/libexec/ims-submit /usr/lib/imsengine/patch-fzs /etc/init.d/ims \
+         /usr/libexec/fzs-at /usr/bin/fzs-atio; do
     [ -e "$f" ] && echo "  OK   $f" || echo "  MISS $f"
 done
 echo

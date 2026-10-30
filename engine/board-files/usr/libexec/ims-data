@@ -164,7 +164,9 @@ ensure_dns
 
 while :; do
 	PORT=""
-	for p in /dev/ttyUSB2 /dev/ttyUSB4; do
+	# ★ 候选口动态枚举（原写法写死 ttyUSB2/ttyUSB4，USB 重枚举后就全错）。
+	#   顺序由 ims-atport 决定：:1.4 主 AT 口优先，被 pppd 独占时自动落到 :1.3。
+	for p in $(/usr/libexec/ims-atport 2>/dev/null || ls /dev/ttyUSB* 2>/dev/null); do
 		[ -c "$p" ] || continue
 		at "$p" 'AT+CPIN?' 2>/dev/null | grep -q 'READY' || continue
 		PORT="$p"; break

@@ -20,7 +20,7 @@ set -e
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
 PY="${PYTHON:-python3}"
-PANEL_VER="${1:-0.3.5}"
+PANEL_VER="${1:-0.3.7}"
 
 command -v "$PY" >/dev/null 2>&1 || PY=python
 

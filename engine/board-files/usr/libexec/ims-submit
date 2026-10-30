@@ -1,0 +1,60 @@
+#!/bin/sh
+# ims-submit —— 向 imsengine 提交一条 IMS 短信发送请求
+#
+# 用法: ims-submit <号码> <内容>
+# 退出: 0 成功发出 / 1 失败（原因写 stderr）
+#
+# ★★★ 2026-10-30 为什么要有这个独立脚本 ★★★
+#   原来面板发短信走 `/etc/init.d/ims submit`，而 rc.common 在执行**任何**子命令
+#   前都会先拿服务锁 procd_lock（flock /var/lock/procd_ims.lock）。
+#   ims 的 start_service 第一步是 native_ims_port 探测 —— 要遍历 6 个串口，
+#   每口 -t 2500 且内部带 3 次重试，最坏 45s 以上；这整段时间锁都被 held。
+#   实测后果（2026-10-30 现场）：
+#       /etc/init.d/ims start   ← 卡住不放锁（PID 16235，持续 4 分钟）
+#       /etc/init.d/ims submit  ← 卡在 `flock 1000`，面板一直转圈，短信永远发不出
+#   而发短信本身只是「往 /tmp/ims-sms 投一个请求文件、等引擎写 .done」，
+#   和服务的 start/stop 没有必须串行的理由，所以把它拆出来直接做，
+#   完全绕开 procd 锁。init.d 的 submit 仍保留（向后兼容），内部改为调用本脚本。
+#
+# 文件协议（与 imsengine/fzsbridge.go 对齐，勿单方面改动）：
+#   /tmp/ims-sms/req-<id>.txt   第 1 行号码，第 2 行起为正文
+#   /tmp/ims-sms/req-<id>.done  引擎写回：ok / err:<原因>
+
+REQ_DIR=/tmp/ims-sms
+STATUS=/tmp/ims_status.txt
+
+[ -n "$1" ] || { echo "号码为空" >&2; exit 1; }
+[ -n "$2" ] || { echo "内容为空" >&2; exit 1; }
+
+# IMS 未注册直接拒（避免把用户短信堆到队列里无人问津）
+# 旁路态的 STATE 是「原生 IMS 已注册（旁路）」，故用包含式匹配
+if ! grep -q "STATE='[^']*已注册" "$STATUS" 2>/dev/null; then
+	st=$(sed -n "s/^STATE='\(.*\)'/\1/p" "$STATUS" 2>/dev/null)
+	echo "IMS 未注册（当前状态: ${st:-引擎未运行}），短信未发出。请等 IMS 注册成功后再试" >&2
+	exit 1
+fi
+
+mkdir -p "$REQ_DIR" 2>/dev/null
+id="$(date +%s)-$$"
+printf '%s\n' "$1" > "$REQ_DIR/.req.$id.tmp"
+printf '%s' "$2" >> "$REQ_DIR/.req.$id.tmp"
+mv "$REQ_DIR/.req.$id.tmp" "$REQ_DIR/req-$id.txt"
+
+i=0
+while [ $i -lt 20 ]; do   # 20 × 1s（busybox sleep 不支持小数；网关应答本就 5~10s）
+	if [ -f "$REQ_DIR/req-$id.done" ]; then
+		res=$(cat "$REQ_DIR/req-$id.done" 2>/dev/null)
+		rm -f "$REQ_DIR/req-$id.done"
+		case "$res" in
+		ok)   exit 0 ;;
+		err:*) echo "${res#err:}" >&2; exit 1 ;;
+		*)     echo "引擎返回异常: $res" >&2; exit 1 ;;
+		esac
+	fi
+	sleep 1
+	i=$((i + 1))
+done
+# 超时: 撤回请求（引擎可能正重启, 恢复后补发会造成"以为没发却发了"）
+rm -f "$REQ_DIR/req-$id.txt" "$REQ_DIR/req-$id.done"
+echo "IMS 引擎 20s 无响应，短信未发出（请求已撤回）" >&2
+exit 1

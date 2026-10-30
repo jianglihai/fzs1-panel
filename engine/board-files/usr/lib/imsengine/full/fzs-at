@@ -44,15 +44,61 @@ find_up() {
 	return 1
 }
 
+# 探测一个 ttyUSB 是否**真能**当 AT 口用（能回 OK）。
+#
+# ★ 2026-10-30 实测故障：口存在 ≠ 口可用。
+#   EC200T 用 PPP 拨号时，固件的 pppd 会独占它的 AT 口：
+#       pppd /dev/ttyUSB2 115200 connect chat "" AT OK ATD*99***1# CONNECT
+#   此时 open("/dev/ttyUSB2") 直接返回 EAGAIN（"Resource temporarily
+#   unavailable"）。而下面 find_at_by_pid 原先只按 sysfs 路径里的 `:1.4`
+#   挑口，必然挑中这个被占的口 → 上层一律报"模组无响应"，
+#   面板把模组显示成离线，短信也发不出去（卡插在那个模组上也读不到）。
+#   所以这里必须**实际发一条 AT**，谁回 OK 谁才是 AT 口。
+probe_at() {
+	[ -n "$ATIO_BIN" ] && [ -c "/dev/$1" ] || return 1
+	# 锁文件与 at_query 用同一个：短信轮询每 2 秒就开一次串口，
+	# 两边若各用一把锁会同时 open 同一个 tty，双方都拿到 EAGAIN 而互相误判。
+	_r=$( { flock 9
+		printf 'AT\n'
+	} 9>"/tmp/fzs-at-${1}.lock" | "$ATIO_BIN" -t 600 -d 100 "/dev/$1" 2>/dev/null )
+	case "$_r" in *OK*) return 0 ;; esac
+	return 1
+}
+
 find_at_by_pid() {
 	_pid="$1"
+	_cf="/tmp/fzs-at-port-$_pid"
+	# 端口选择结果缓存 60 秒：短信守护每 2 秒轮询一次，每轮都实测会多花
+	# 600ms；而被独占的口在开机后基本是稳定状态（pppd 起来就不再变）。
+	if [ -f "$_cf" ]; then
+		_cp=$(cut -d' ' -f1 "$_cf" 2>/dev/null)
+		_ct=$(cut -d' ' -f2 "$_cf" 2>/dev/null)
+		case "$_ct" in ''|*[!0-9]*) _ct=0 ;; esac
+		if [ -n "$_cp" ] && [ -c "/dev/$_cp" ] \
+		   && [ $(($(date +%s) - _ct)) -lt 60 ]; then
+			echo "$_cp"; return 0
+		fi
+	fi
+	# 收集该模组的全部串口；:1.4 排最前（历史 AT 口就在那，命中时省一次探测）
+	_pref=''; _list=''
 	for _d in /sys/class/tty/ttyUSB*; do
 		[ -e "$_d" ] || continue
 		_n="${_d##*/}"
 		_r=$(readlink -f "$_d/device" 2>/dev/null)
-		case "$_r" in *:1.4*) ;; *) continue ;; esac
 		_dd=$(find_up "$_r" idProduct) || continue
-		[ "$(cat "$_dd/idProduct" 2>/dev/null)" = "$_pid" ] && { echo "$_n"; return 0; }
+		[ "$(cat "$_dd/idProduct" 2>/dev/null)" = "$_pid" ] || continue
+		case "$_r" in *:1.4*) _pref="$_n" ;; esac
+		_list="$_list $_n"
+	done
+	# 没有 fzs-atio 就没法实测：退回老的路径判断，保证还能凑合用
+	if [ -z "$ATIO_BIN" ]; then
+		[ -n "$_pref" ] && { echo "$_pref"; return 0; }
+		return 1
+	fi
+	for _n in $_pref $_list; do
+		probe_at "$_n" || continue
+		printf '%s %s\n' "$_n" "$(date +%s)" > "$_cf" 2>/dev/null
+		echo "$_n"; return 0
 	done
 	return 1
 }
@@ -446,7 +492,12 @@ cmd_ports() {
 		case "$_pid" in
 		$PID_EC200T) _m=EC200T ;; $PID_EC200N) _m=EC200N ;; *) _m='?' ;; esac
 		_at=''
-		case "$_r" in *:1.4*) _at='  ★AT口' ;; esac
+		# 实测哪个口真能通 AT（被 pppd 独占的口会 EAGAIN，不能只看路径）
+		if probe_at "$_n"; then
+			_at='  ★AT口'
+		elif [ -n "$ATIO_BIN" ]; then
+			_at='  (占用/无响应)'
+		fi
 		printf '%-12s %-9s %s%s\n' "/dev/$_n" "2c7c:$_pid" "$_m" "$_at"
 	done
 }
@@ -731,7 +782,7 @@ cmd_sms_send() {   # $1=目标 $2=号码 $3=内容
 	#   （下面 die "被模组拒绝（CMS 错误 …）" 就是这条路径）。
 	#   自研 imsengine 在用户态实现了 IMS（SIP MESSAGE over IP，走 cid3 数据通道），
 	#   所以把面板发送统一改走 IMS：
-	#     目标 ims / 1(EC200T) → /etc/init.d/ims submit（用 200T 那张卡的 IMS 注册）
+	#     目标 ims / 1(EC200T) → /usr/libexec/ims-submit（用 200T 那张卡的 IMS 注册）
 	#     目标 2(EC200N)       → 保留原生 AT+CMGS（EC200N 固件自带 IMS 栈，原生短信本来就正常）
 	# ★ 2026-10-21 [ims-bypass]: 自带 IMS 栈的模组旁路引擎
 	_tgt="$1"
@@ -741,12 +792,23 @@ cmd_sms_send() {   # $1=目标 $2=号码 $3=内容
 			if [ -n "$_nt" ]; then
 				# 该模组固件自带 IMS 且已注册 → 直接用它的原生通道（模组内部即走 IMS 域）
 				_tgt="$_nt"
-			elif [ -x /etc/init.d/ims ]; then
+			elif [ -x /usr/libexec/ims-submit ] || [ -x /etc/init.d/ims ]; then
 				# 引擎发成功就返回；失败（如未注册）则降级原生，不至于彻底发不出
-				if /etc/init.d/ims submit "$2" "$3"; then
+				#
+				# ★ 2026-10-30 改走 /usr/libexec/ims-submit，不再调 /etc/init.d/ims：
+				#   rc.common 执行**任何**子命令前都要拿 procd_lock
+				#   (/var/lock/procd_ims.lock)，而 start_service 探测 IMS 端口会遍历
+				#   6 个串口（每口 -t 2500 且带 3 次重试，最坏 45s+），整段时间持锁。
+				#   实测后果：ims start 卡住时，submit 在 flock 上无限阻塞，面板一直
+				#   转圈、短信永远发不出。发短信只是投请求文件，不需要跟启停串行。
+				if [ -x /usr/libexec/ims-submit ]; then
+					/usr/libexec/ims-submit "$2" "$3"
+				else
+					/etc/init.d/ims submit "$2" "$3"     # 旧版兜底
+				fi && {
 					printf '{"ok":true,"chunks":1}\n'
 					exit 0
-				fi
+				}
 				_tgt="1"
 			fi
 			;;
